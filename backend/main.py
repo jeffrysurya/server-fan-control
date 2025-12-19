@@ -1,0 +1,376 @@
+#!/usr/bin/env python3
+"""
+Fan Control API Server
+FastAPI backend with WebSocket for real-time fan monitoring and control.
+"""
+
+import asyncio
+import json
+import os
+import subprocess
+import logging
+from pathlib import Path
+from typing import Optional
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
+
+# Paths
+BASE_DIR = Path(__file__).parent
+HELPER_SCRIPT = BASE_DIR / "fan_helper.py"
+CONFIG_FILE = BASE_DIR / "config.json"
+FRONTEND_DIR = BASE_DIR.parent / "frontend" / "dist"
+
+# Default config
+DEFAULT_CONFIG = {
+    "mode": "auto",  # "auto" or "manual"
+    "curves": {
+        str(i): [
+            {"point": 1, "temp": 30, "pwm": 50},
+            {"point": 2, "temp": 40, "pwm": 80},
+            {"point": 3, "temp": 50, "pwm": 120},
+            {"point": 4, "temp": 60, "pwm": 180},
+            {"point": 5, "temp": 70, "pwm": 255},
+        ]
+        for i in range(1, 6)
+    },
+    "fan_names": {
+        "1": "CPU Fan",
+        "2": "Chassis Fan 1",
+        "3": "Chassis Fan 2",
+        "4": "Chassis Fan 3",
+        "5": "Chassis Fan 4",
+    }
+}
+
+
+def load_config() -> dict:
+    """Load config from file or return defaults."""
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE) as f:
+                config = json.load(f)
+                # Merge with defaults for any missing keys
+                for key, value in DEFAULT_CONFIG.items():
+                    if key not in config:
+                        config[key] = value
+                return config
+        except (json.JSONDecodeError, IOError) as e:
+            logger.error(f"Failed to load config: {e}")
+    return DEFAULT_CONFIG.copy()
+
+
+def save_config(config: dict):
+    """Save config to file."""
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(config, f, indent=2)
+        logger.info("Config saved")
+    except IOError as e:
+        logger.error(f"Failed to save config: {e}")
+
+
+def run_helper(command: str, *args) -> dict:
+    """Run the privileged helper script via sudo."""
+    cmd = ["sudo", "-n", "python3", str(HELPER_SCRIPT), command] + [str(a) for a in args]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode != 0:
+            logger.error(f"Helper error: {result.stderr}")
+            return {"error": result.stderr or "Command failed"}
+        return json.loads(result.stdout)
+    except subprocess.TimeoutExpired:
+        return {"error": "Command timed out"}
+    except json.JSONDecodeError:
+        return {"error": "Invalid response from helper"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def apply_saved_settings():
+    """Apply saved settings on startup."""
+    config = load_config()
+    
+    if config.get("mode") == "manual":
+        logger.info("Applying saved manual mode settings...")
+        
+        # Set all fans to manual mode and apply curves
+        for fan_id in range(1, 6):
+            # Set to manual mode
+            result = run_helper("set_mode", fan_id, 1)
+            if "error" in result:
+                logger.error(f"Failed to set fan {fan_id} to manual: {result['error']}")
+                continue
+            
+            # Apply curve points
+            curves = config.get("curves", {}).get(str(fan_id), [])
+            for point in curves:
+                run_helper(
+                    "set_curve",
+                    fan_id,
+                    point["point"],
+                    point["temp"],
+                    point["pwm"]
+                )
+        
+        logger.info("Manual settings applied")
+    else:
+        logger.info("Auto mode - letting BIOS control fans")
+        for fan_id in range(1, 6):
+            run_helper("set_mode", fan_id, 5)
+
+
+# Connection manager for WebSocket
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+    
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"WebSocket connected. Total: {len(self.active_connections)}")
+    
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+        logger.info(f"WebSocket disconnected. Total: {len(self.active_connections)}")
+    
+    async def broadcast(self, message: dict):
+        disconnected = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                disconnected.append(connection)
+        
+        for conn in disconnected:
+            if conn in self.active_connections:
+                self.active_connections.remove(conn)
+
+
+manager = ConnectionManager()
+config = load_config()
+
+
+# Background task for broadcasting status
+async def status_broadcaster():
+    """Broadcast fan status every second."""
+    while True:
+        try:
+            if manager.active_connections:
+                status = run_helper("get_status")
+                status["config_mode"] = config.get("mode", "auto")
+                status["fan_names"] = config.get("fan_names", {})
+                await manager.broadcast(status)
+        except Exception as e:
+            logger.error(f"Broadcast error: {e}")
+        await asyncio.sleep(1)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup and shutdown events."""
+    # Startup
+    global config
+    config = load_config()
+    apply_saved_settings()
+    
+    # Start background broadcaster
+    broadcast_task = asyncio.create_task(status_broadcaster())
+    logger.info("Fan Control API started")
+    
+    yield
+    
+    # Shutdown
+    broadcast_task.cancel()
+    try:
+        await broadcast_task
+    except asyncio.CancelledError:
+        pass
+    logger.info("Fan Control API stopped")
+
+
+app = FastAPI(title="Fan Control API", lifespan=lifespan)
+
+
+# Pydantic models
+class ModeRequest(BaseModel):
+    mode: str  # "auto" or "manual"
+
+
+class CurvePoint(BaseModel):
+    point: int
+    temp: float
+    pwm: int
+
+
+class CurveRequest(BaseModel):
+    fan_id: int
+    curve: list[CurvePoint]
+
+
+class FanNameRequest(BaseModel):
+    fan_id: int
+    name: str
+
+
+class ManualPWMRequest(BaseModel):
+    fan_id: int
+    pwm: int
+
+
+# API Routes
+@app.get("/api/status")
+async def get_status():
+    """Get current fan status."""
+    status = run_helper("get_status")
+    status["config_mode"] = config.get("mode", "auto")
+    status["fan_names"] = config.get("fan_names", {})
+    status["curves"] = config.get("curves", {})
+    return status
+
+
+@app.post("/api/mode")
+async def set_mode(request: ModeRequest):
+    """Set global mode (auto/manual)."""
+    global config
+    
+    if request.mode not in ["auto", "manual"]:
+        raise HTTPException(400, "Invalid mode. Use 'auto' or 'manual'")
+    
+    config["mode"] = request.mode
+    save_config(config)
+    
+    # Apply mode to all fans
+    hw_mode = 5 if request.mode == "auto" else 1
+    results = []
+    
+    for fan_id in range(1, 6):
+        result = run_helper("set_mode", fan_id, hw_mode)
+        results.append(result)
+        
+        # If switching to manual, apply saved curves
+        if request.mode == "manual" and "error" not in result:
+            curves = config.get("curves", {}).get(str(fan_id), [])
+            for point in curves:
+                run_helper(
+                    "set_curve",
+                    fan_id,
+                    point["point"],
+                    point["temp"],
+                    point["pwm"]
+                )
+    
+    return {"success": True, "mode": request.mode, "results": results}
+
+
+@app.post("/api/curve")
+async def set_curve(request: CurveRequest):
+    """Set fan curve for a specific fan."""
+    global config
+    
+    if request.fan_id < 1 or request.fan_id > 5:
+        raise HTTPException(400, "Invalid fan_id. Must be 1-5")
+    
+    if len(request.curve) != 5:
+        raise HTTPException(400, "Curve must have exactly 5 points")
+    
+    # Validate curve is monotonic
+    for i in range(1, len(request.curve)):
+        if request.curve[i].temp < request.curve[i-1].temp:
+            raise HTTPException(400, "Curve temperatures must be increasing")
+        if request.curve[i].pwm < request.curve[i-1].pwm:
+            raise HTTPException(400, "Curve PWM values must be increasing")
+    
+    # Save to config
+    config.setdefault("curves", {})
+    config["curves"][str(request.fan_id)] = [
+        {"point": p.point, "temp": p.temp, "pwm": p.pwm}
+        for p in request.curve
+    ]
+    save_config(config)
+    
+    # Apply if in manual mode
+    results = []
+    if config.get("mode") == "manual":
+        for point in request.curve:
+            result = run_helper(
+                "set_curve",
+                request.fan_id,
+                point.point,
+                point.temp,
+                point.pwm
+            )
+            results.append(result)
+    
+    return {"success": True, "fan_id": request.fan_id, "applied": config.get("mode") == "manual", "results": results}
+
+
+@app.post("/api/fan_name")
+async def set_fan_name(request: FanNameRequest):
+    """Set custom name for a fan."""
+    global config
+    
+    if request.fan_id < 1 or request.fan_id > 5:
+        raise HTTPException(400, "Invalid fan_id. Must be 1-5")
+    
+    config.setdefault("fan_names", {})
+    config["fan_names"][str(request.fan_id)] = request.name
+    save_config(config)
+    
+    return {"success": True, "fan_id": request.fan_id, "name": request.name}
+
+
+@app.get("/api/config")
+async def get_config():
+    """Get current config."""
+    return config
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time updates."""
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive, handle any incoming messages
+            data = await websocket.receive_text()
+            # Could handle commands here if needed
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+
+# Serve frontend
+if FRONTEND_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIR / "assets"), name="assets")
+    
+    @app.get("/")
+    async def serve_frontend():
+        return FileResponse(FRONTEND_DIR / "index.html")
+    
+    @app.get("/{path:path}")
+    async def serve_frontend_fallback(path: str):
+        # API routes are handled above, this catches frontend routes
+        file_path = FRONTEND_DIR / path
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(FRONTEND_DIR / "index.html")
+else:
+    @app.get("/")
+    async def no_frontend():
+        return {"message": "Frontend not built. Run 'npm run build' in frontend directory."}
