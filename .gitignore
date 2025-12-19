@@ -2,3 +2,7 @@ node_modules
 .nvmrc
 .python-version
 dist
+
+# Docker
+docker-compose.override.yml
+.dockerignore
