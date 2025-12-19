@@ -6,6 +6,8 @@ services:
     container_name: fan-control-frontend
     ports:
       - "9001:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
       test:
