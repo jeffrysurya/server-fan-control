@@ -51,6 +51,10 @@ DEFAULT_CONFIG = {
         "3": "Chassis Fan 2",
         "4": "Chassis Fan 3",
         "5": "Chassis Fan 4",
+    },
+    "pwm_modes": {
+        str(i): 1  # 0=DC, 1=PWM (default to PWM)
+        for i in range(1, 6)
     }
 }
 
@@ -106,6 +110,14 @@ def run_helper(command: str, *args) -> dict:
 def apply_saved_settings():
     """Apply saved settings on startup."""
     config = load_config()
+    
+    # Apply PWM modes first
+    pwm_modes = config.get("pwm_modes", {})
+    for fan_id in range(1, 6):
+        pwm_mode = pwm_modes.get(str(fan_id), 1)  # Default to PWM mode
+        result = run_helper("set_pwm_mode", fan_id, pwm_mode)
+        if "error" in result:
+            logger.error(f"Failed to set PWM mode for fan {fan_id}: {result['error']}")
     
     if config.get("mode") == "manual":
         logger.info("Applying saved manual mode settings...")
@@ -234,6 +246,11 @@ class ManualPWMRequest(BaseModel):
     pwm: int
 
 
+class PWMModeRequest(BaseModel):
+    fan_id: int
+    pwm_mode: int  # 0=DC, 1=PWM
+
+
 # API Routes
 @app.get("/api/status")
 async def get_status():
@@ -334,6 +351,30 @@ async def set_fan_name(request: FanNameRequest):
     save_config(config)
     
     return {"success": True, "fan_id": request.fan_id, "name": request.name}
+
+
+@app.post("/api/pwm_mode")
+async def set_pwm_mode(request: PWMModeRequest):
+    """Set PWM mode for a fan (0=DC, 1=PWM)."""
+    global config
+    
+    if request.fan_id < 1 or request.fan_id > 5:
+        raise HTTPException(400, "Invalid fan_id. Must be 1-5")
+    
+    if request.pwm_mode not in [0, 1]:
+        raise HTTPException(400, "Invalid pwm_mode. Use 0 for DC or 1 for PWM")
+    
+    # Apply the PWM mode
+    result = run_helper("set_pwm_mode", request.fan_id, request.pwm_mode)
+    if "error" in result:
+        raise HTTPException(500, result["error"])
+    
+    # Save to config
+    config.setdefault("pwm_modes", {})
+    config["pwm_modes"][str(request.fan_id)] = request.pwm_mode
+    save_config(config)
+    
+    return {"success": True, "fan_id": request.fan_id, "pwm_mode": request.pwm_mode}
 
 
 @app.get("/api/config")

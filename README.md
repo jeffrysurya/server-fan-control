@@ -31,6 +31,7 @@ sudo ./install.sh
 ```
 
 The installer will:
+
 1. Check for NCT6779 sensor
 2. Install Python and Node.js dependencies
 3. Build the React frontend
@@ -71,7 +72,7 @@ sudo systemctl enable --now fan-control
 
 ## Usage
 
-Access the web interface at `http://YOUR_SERVER_IP:8000`
+Access the web interface at `http://YOUR_SERVER_IP:8001`
 
 ### Modes
 
@@ -87,14 +88,14 @@ Access the web interface at `http://YOUR_SERVER_IP:8000`
 
 ### API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/status` | GET | Current fan status, temps, RPM |
-| `/api/config` | GET | Current configuration |
-| `/api/mode` | POST | Set mode (`{"mode": "auto"}` or `{"mode": "manual"}`) |
-| `/api/curve` | POST | Set fan curve |
-| `/api/fan_name` | POST | Set fan name |
-| `/ws` | WebSocket | Real-time status updates |
+| Endpoint        | Method    | Description                                           |
+| --------------- | --------- | ----------------------------------------------------- |
+| `/api/status`   | GET       | Current fan status, temps, RPM                        |
+| `/api/config`   | GET       | Current configuration                                 |
+| `/api/mode`     | POST      | Set mode (`{"mode": "auto"}` or `{"mode": "manual"}`) |
+| `/api/curve`    | POST      | Set fan curve                                         |
+| `/api/fan_name` | POST      | Set fan name                                          |
+| `/ws`           | WebSocket | Real-time status updates                              |
 
 ## Configuration
 
@@ -155,6 +156,7 @@ sudo cat /etc/sudoers.d/fan-control
 ### Fans not responding
 
 Some motherboards lock fan control in BIOS. Check:
+
 1. BIOS → H/W Monitor → Fan-Tastic Tuning
 2. Set fans to "Full Speed" or "Manual" to release OS control
 
@@ -165,6 +167,7 @@ sudo ./uninstall.sh
 ```
 
 This will:
+
 - Stop and remove the systemd service
 - Remove sudo permissions
 - Reset fans to BIOS control

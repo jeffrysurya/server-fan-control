@@ -23,7 +23,7 @@ const ThermometerIcon = ({ className }) => (
 )
 
 // Fan Card Component
-function FanCard({ fan, fanName, onNameChange, isManual, currentTemp }) {
+function FanCard({ fan, fanName, onNameChange, onPWMModeChange, isManual, currentTemp }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(fanName)
   
@@ -38,6 +38,8 @@ function FanCard({ fan, fanName, onNameChange, isManual, currentTemp }) {
     2: 'Thermal Cruise',
     5: 'Auto (BIOS)',
   }[fan.mode] || `Mode ${fan.mode}`
+  
+  const pwmModeLabel = fan.pwm_mode === 0 ? 'DC' : 'PWM'
 
   return (
     <div className="fan-card">
@@ -64,9 +66,20 @@ function FanCard({ fan, fanName, onNameChange, isManual, currentTemp }) {
             </span>
           )}
         </div>
-        <span className={`text-xs px-2 py-1 rounded ${isManual ? 'bg-orange-600' : 'bg-green-600'}`}>
-          {modeLabel}
-        </span>
+        <div className="flex gap-2">
+          <span className={`text-xs px-2 py-1 rounded ${isManual ? 'bg-orange-600' : 'bg-green-600'}`}>
+            {modeLabel}
+          </span>
+          <button
+            onClick={() => onPWMModeChange(fan.id, fan.pwm_mode === 0 ? 1 : 0)}
+            className={`text-xs px-2 py-1 rounded transition-colors ${
+              fan.pwm_mode === 1 ? 'bg-blue-600 hover:bg-blue-500' : 'bg-purple-600 hover:bg-purple-500'
+            }`}
+            title="Click to toggle between DC and PWM mode"
+          >
+            {pwmModeLabel}
+          </button>
+        </div>
       </div>
       
       <div className="grid grid-cols-2 gap-4 text-sm">
@@ -107,13 +120,26 @@ function FanCard({ fan, fanName, onNameChange, isManual, currentTemp }) {
   )
 }
 
-// Curve Editor Component
+// Curve Editor Component with Drag-and-Drop
 function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
   const [points, setPoints] = useState(
     curve.map(p => ({ ...p, pwm_percent: Math.round(p.pwm / 255 * 100) }))
   )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+  const [dragging, setDragging] = useState(null) // { index, startX, startY }
+  const [chartDimensions, setChartDimensions] = useState({ width: 0, height: 0, left: 0, top: 0 })
+  const chartRef = useCallback(node => {
+    if (node) {
+      const rect = node.getBoundingClientRect()
+      setChartDimensions({
+        width: rect.width - 40, // account for margins
+        height: rect.height - 30,
+        left: rect.left + 10,
+        top: rect.top + 10
+      })
+    }
+  }, [])
 
   const updatePoint = (index, field, value) => {
     const newPoints = [...points]
@@ -130,6 +156,68 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
     setPoints(newPoints)
     setError(null)
   }
+
+  const updatePointFromDrag = (index, temp, pwm) => {
+    const newPoints = [...points]
+    
+    // Apply constraints based on neighboring points
+    const prevPoint = index > 0 ? newPoints[index - 1] : null
+    const nextPoint = index < newPoints.length - 1 ? newPoints[index + 1] : null
+    
+    // Constrain temperature
+    let constrainedTemp = Math.max(0, Math.min(100, temp))
+    if (prevPoint) constrainedTemp = Math.max(prevPoint.temp, constrainedTemp)
+    if (nextPoint) constrainedTemp = Math.min(nextPoint.temp, constrainedTemp)
+    
+    // Constrain PWM
+    let constrainedPwm = Math.max(0, Math.min(100, pwm))
+    if (prevPoint) constrainedPwm = Math.max(prevPoint.pwm_percent, constrainedPwm)
+    if (nextPoint) constrainedPwm = Math.min(nextPoint.pwm_percent, constrainedPwm)
+    
+    newPoints[index].temp = Math.round(constrainedTemp)
+    newPoints[index].pwm_percent = Math.round(constrainedPwm)
+    newPoints[index].pwm = Math.round(constrainedPwm * 255 / 100)
+    
+    setPoints(newPoints)
+    setError(null)
+  }
+
+  const handleMouseDown = (index) => (e) => {
+    e.preventDefault()
+    setDragging({ index, startX: e.clientX, startY: e.clientY })
+  }
+
+  const handleMouseMove = useCallback((e) => {
+    if (!dragging || !chartDimensions.width) return
+    
+    const { index } = dragging
+    const { left, top, width, height } = chartDimensions
+    
+    // Calculate position relative to chart
+    const x = e.clientX - left
+    const y = e.clientY - top
+    
+    // Convert pixel position to data values
+    const temp = (x / width) * 100
+    const pwm = 100 - (y / height) * 100 // Invert Y axis
+    
+    updatePointFromDrag(index, temp, pwm)
+  }, [dragging, chartDimensions])
+
+  const handleMouseUp = useCallback(() => {
+    setDragging(null)
+  }, [])
+
+  useEffect(() => {
+    if (dragging) {
+      window.addEventListener('mousemove', handleMouseMove)
+      window.addEventListener('mouseup', handleMouseUp)
+      return () => {
+        window.removeEventListener('mousemove', handleMouseMove)
+        window.removeEventListener('mouseup', handleMouseUp)
+      }
+    }
+  }, [dragging, handleMouseMove, handleMouseUp])
 
   const validateCurve = () => {
     for (let i = 1; i < points.length; i++) {
@@ -178,8 +266,16 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
           <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl">&times;</button>
         </div>
         
+        <div className="mb-2 text-sm text-gray-400">
+          💡 Drag points on the chart or use input fields below for precise control
+        </div>
+        
         {/* Chart */}
-        <div className="h-64 mb-6 bg-gray-900 rounded p-2">
+        <div 
+          ref={chartRef}
+          className="h-64 mb-6 bg-gray-900 rounded p-2 select-none"
+          style={{ cursor: dragging ? 'grabbing' : 'default' }}
+        >
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ top: 10, right: 30, bottom: 20, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
@@ -187,6 +283,7 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
                 dataKey="temp" 
                 label={{ value: 'Temperature (°C)', position: 'bottom', fill: '#9ca3af' }}
                 stroke="#9ca3af"
+                domain={[0, 100]}
               />
               <YAxis 
                 label={{ value: 'PWM %', angle: -90, position: 'insideLeft', fill: '#9ca3af' }}
@@ -202,10 +299,42 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
                 type="monotone" 
                 dataKey="pwm" 
                 stroke="#60a5fa" 
-                strokeWidth={2}
-                dot={{ fill: '#60a5fa', r: 6 }}
-                activeDot={{ r: 8 }}
+                strokeWidth={3}
+                dot={false}
               />
+              {/* Custom draggable dots */}
+              {points.map((point, idx) => {
+                const x = (point.temp / 100) * (chartDimensions.width || 1)
+                const y = ((100 - point.pwm_percent) / 100) * (chartDimensions.height || 1)
+                const isDragging = dragging?.index === idx
+                
+                return (
+                  <g key={point.point}>
+                    <circle
+                      cx={x + 10}
+                      cy={y + 10}
+                      r={isDragging ? 10 : 8}
+                      fill={isDragging ? '#3b82f6' : '#60a5fa'}
+                      stroke="#1f2937"
+                      strokeWidth={2}
+                      style={{ cursor: 'grab' }}
+                      onMouseDown={handleMouseDown(idx)}
+                    />
+                    {isDragging && (
+                      <text
+                        x={x + 10}
+                        y={y - 5}
+                        textAnchor="middle"
+                        fill="#60a5fa"
+                        fontSize="12"
+                        fontWeight="bold"
+                      >
+                        {point.temp}°C, {point.pwm_percent}%
+                      </text>
+                    )}
+                  </g>
+                )
+              })}
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -404,6 +533,24 @@ export default function App() {
     }
   }
 
+  const handlePWMModeChange = async (fanId, pwmMode) => {
+    try {
+      const res = await fetch('/api/pwm_mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fan_id: fanId, pwm_mode: pwmMode })
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || 'Failed to set PWM mode')
+      }
+      // Config will be updated via WebSocket status update
+    } catch (e) {
+      setError(e.message)
+      console.error('Failed to set PWM mode:', e)
+    }
+  }
+
   const fanNames = config?.fan_names || {}
   const curves = config?.curves || {}
   const cpuTemp = status?.temps?.['CPU (Tctl)'] || status?.temps?.CPUTIN
@@ -479,6 +626,7 @@ export default function App() {
                 fan={fan}
                 fanName={fanNames[fan.id] || `Fan ${fan.id}`}
                 onNameChange={handleNameChange}
+                onPWMModeChange={handlePWMModeChange}
                 isManual={mode === 'manual'}
                 currentTemp={cpuTemp}
               />
@@ -500,6 +648,7 @@ export default function App() {
         <div className="mt-6 text-sm text-gray-500">
           <p><strong>Auto (BIOS):</strong> Fans controlled by motherboard SmartFan IV curves</p>
           <p><strong>Manual Curve:</strong> Custom temperature-based curves applied via OS. Click the edit icon on each fan to customize.</p>
+          <p><strong>PWM Mode:</strong> Toggle between DC (voltage-based) and PWM (pulse width modulation) control. Click the mode badge to switch.</p>
         </div>
       </div>
       

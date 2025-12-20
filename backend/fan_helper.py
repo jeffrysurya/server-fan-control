@@ -6,6 +6,7 @@ This script runs with sudo to read/write fan control sysfs files.
 Usage:
     fan_helper.py get_status
     fan_helper.py set_mode <pwm_num> <mode>
+    fan_helper.py set_pwm_mode <pwm_num> <pwm_mode>
     fan_helper.py set_pwm <pwm_num> <value>
     fan_helper.py set_curve <pwm_num> <point> <temp> <pwm>
     fan_helper.py get_curve <pwm_num>
@@ -100,6 +101,7 @@ def get_status():
             "pwm": 0,
             "pwm_percent": 0,
             "mode": 5,
+            "pwm_mode": 1,  # 0=DC, 1=PWM
             "curve": []
         }
         
@@ -125,6 +127,14 @@ def get_status():
         if mode:
             try:
                 fan_data["mode"] = int(mode)
+            except ValueError:
+                pass
+        
+        # PWM Mode (0=DC, 1=PWM)
+        pwm_mode = read_file(os.path.join(hwmon, f"pwm{i}_mode"))
+        if pwm_mode:
+            try:
+                fan_data["pwm_mode"] = int(pwm_mode)
             except ValueError:
                 pass
         
@@ -161,6 +171,21 @@ def set_mode(pwm_num, mode):
     if write_file(path, mode):
         return {"success": True, "pwm": pwm_num, "mode": mode}
     return {"error": f"Failed to set mode for pwm{pwm_num}"}
+
+def set_pwm_mode(pwm_num, pwm_mode):
+    """Set PWM mode (0=DC, 1=PWM)."""
+    hwmon = find_hwmon()
+    if not hwmon:
+        return {"error": "nct6779 not found"}
+    
+    pwm_mode = int(pwm_mode)
+    if pwm_mode not in [0, 1]:
+        return {"error": f"Invalid PWM mode: {pwm_mode}. Use 0 for DC or 1 for PWM"}
+    
+    path = os.path.join(hwmon, f"pwm{pwm_num}_mode")
+    if write_file(path, pwm_mode):
+        return {"success": True, "pwm": pwm_num, "pwm_mode": pwm_mode}
+    return {"error": f"Failed to set PWM mode for pwm{pwm_num}"}
 
 def set_pwm(pwm_num, value):
     """Set PWM value (0-255)."""
@@ -234,6 +259,8 @@ def main():
             result = get_status()
         elif cmd == "set_mode" and len(sys.argv) >= 4:
             result = set_mode(int(sys.argv[2]), int(sys.argv[3]))
+        elif cmd == "set_pwm_mode" and len(sys.argv) >= 4:
+            result = set_pwm_mode(int(sys.argv[2]), int(sys.argv[3]))
         elif cmd == "set_pwm" and len(sys.argv) >= 4:
             result = set_pwm(int(sys.argv[2]), int(sys.argv[3]))
         elif cmd == "set_curve" and len(sys.argv) >= 6:
