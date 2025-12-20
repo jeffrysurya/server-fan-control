@@ -358,6 +358,8 @@ async def set_pwm_mode(request: PWMModeRequest):
     """Set PWM mode for a fan (0=DC, 1=PWM)."""
     global config
     
+    logger.info(f"PWM mode change request: fan_id={request.fan_id}, pwm_mode={request.pwm_mode}")
+    
     if request.fan_id < 1 or request.fan_id > 5:
         raise HTTPException(400, "Invalid fan_id. Must be 1-5")
     
@@ -366,7 +368,10 @@ async def set_pwm_mode(request: PWMModeRequest):
     
     # Apply the PWM mode
     result = run_helper("set_pwm_mode", request.fan_id, request.pwm_mode)
+    logger.info(f"Helper result: {result}")
+    
     if "error" in result:
+        logger.error(f"Failed to set PWM mode: {result['error']}")
         raise HTTPException(500, result["error"])
     
     # Save to config
@@ -374,7 +379,9 @@ async def set_pwm_mode(request: PWMModeRequest):
     config["pwm_modes"][str(request.fan_id)] = request.pwm_mode
     save_config(config)
     
+    logger.info(f"PWM mode set successfully for fan {request.fan_id}: {request.pwm_mode}")
     return {"success": True, "fan_id": request.fan_id, "pwm_mode": request.pwm_mode}
+
 
 
 @app.get("/api/config")

@@ -183,9 +183,26 @@ def set_pwm_mode(pwm_num, pwm_mode):
         return {"error": f"Invalid PWM mode: {pwm_mode}. Use 0 for DC or 1 for PWM"}
     
     path = os.path.join(hwmon, f"pwm{pwm_num}_mode")
+    print(f"[DEBUG] Setting PWM mode for pwm{pwm_num}: mode={pwm_mode}, path={path}", flush=True)
+    
+    # Check if file exists
+    if not os.path.exists(path):
+        print(f"[DEBUG] PWM mode file does not exist: {path}", flush=True)
+        return {"error": f"PWM mode file not found: {path}"}
+    
+    # Try to read current value
+    current = read_file(path)
+    print(f"[DEBUG] Current PWM mode value: {current}", flush=True)
+    
     if write_file(path, pwm_mode):
+        # Verify the write
+        new_value = read_file(path)
+        print(f"[DEBUG] PWM mode set successfully. New value: {new_value}", flush=True)
         return {"success": True, "pwm": pwm_num, "pwm_mode": pwm_mode}
+    
+    print(f"[DEBUG] Failed to write PWM mode to {path}", flush=True)
     return {"error": f"Failed to set PWM mode for pwm{pwm_num}"}
+
 
 def set_pwm(pwm_num, value):
     """Set PWM value (0-255)."""
