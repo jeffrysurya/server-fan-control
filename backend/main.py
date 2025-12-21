@@ -7,6 +7,7 @@ FastAPI backend with WebSocket for real-time fan monitoring and control.
 import asyncio
 import json
 import os
+import glob
 import subprocess
 import logging
 from pathlib import Path
