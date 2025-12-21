@@ -34,7 +34,10 @@ FRONTEND_DIR = BASE_DIR.parent / "frontend" / "dist"
 
 # Default config
 DEFAULT_CONFIG = {
-    "mode": "auto",  # "auto" or "manual"
+    "fan_modes": {
+        str(i): 5  # Default to mode 5 (BIOS control)
+        for i in range(1, 6)
+    },
     "curves": {
         str(i): [
             {"point": 1, "temp": 30, "pwm": 50},
@@ -58,6 +61,16 @@ DEFAULT_CONFIG = {
     }
 }
 
+# Mode descriptions for API
+MODE_DESCRIPTIONS = {
+    0: "Off",
+    1: "Manual",
+    2: "Thermal Cruise",
+    3: "Fan Speed Cruise",
+    4: "Smart Fan IV",
+    5: "BIOS Control"
+}
+
 
 def load_config() -> dict:
     """Load config from file or return defaults."""
@@ -65,6 +78,17 @@ def load_config() -> dict:
         try:
             with open(CONFIG_FILE) as f:
                 config = json.load(f)
+                
+                # Migrate old config format (global mode) to new format (per-fan modes)
+                if "mode" in config and "fan_modes" not in config:
+                    logger.info("Migrating old config format to per-fan modes")
+                    old_mode = config.pop("mode")
+                    # Convert: "auto" -> mode 5, "manual" -> mode 1
+                    new_mode = 5 if old_mode == "auto" else 1
+                    config["fan_modes"] = {str(i): new_mode for i in range(1, 6)}
+                    save_config(config)  # Save migrated config
+                    logger.info(f"Migrated: '{old_mode}' -> mode {new_mode} for all fans")
+                
                 # Merge with defaults for any missing keys
                 for key, value in DEFAULT_CONFIG.items():
                     if key not in config:
@@ -119,18 +143,22 @@ def apply_saved_settings():
         if "error" in result:
             logger.error(f"Failed to set PWM mode for fan {fan_id}: {result['error']}")
     
-    if config.get("mode") == "manual":
-        logger.info("Applying saved manual mode settings...")
+    # Apply per-fan modes
+    fan_modes = config.get("fan_modes", {})
+    logger.info("Applying saved per-fan mode settings...")
+    
+    for fan_id in range(1, 6):
+        mode = fan_modes.get(str(fan_id), 5)  # Default to BIOS control
+        result = run_helper("set_mode", fan_id, mode)
         
-        # Set all fans to manual mode and apply curves
-        for fan_id in range(1, 6):
-            # Set to manual mode
-            result = run_helper("set_mode", fan_id, 1)
-            if "error" in result:
-                logger.error(f"Failed to set fan {fan_id} to manual: {result['error']}")
-                continue
-            
-            # Apply curve points
+        if "error" in result:
+            logger.error(f"Failed to set fan {fan_id} to mode {mode}: {result['error']}")
+            continue
+        
+        logger.info(f"Fan {fan_id} set to mode {mode} ({MODE_DESCRIPTIONS.get(mode, 'Unknown')})") 
+        
+        # Apply curve points for modes that support curves (1, 2, 4)
+        if mode in [1, 2, 4]:
             curves = config.get("curves", {}).get(str(fan_id), [])
             for point in curves:
                 run_helper(
@@ -140,12 +168,8 @@ def apply_saved_settings():
                     point["temp"],
                     point["pwm"]
                 )
-        
-        logger.info("Manual settings applied")
-    else:
-        logger.info("Auto mode - letting BIOS control fans")
-        for fan_id in range(1, 6):
-            run_helper("set_mode", fan_id, 5)
+    
+    logger.info("Per-fan settings applied")
 
 
 # Connection manager for WebSocket
@@ -251,33 +275,43 @@ class PWMModeRequest(BaseModel):
     pwm_mode: int  # 0=DC, 1=PWM
 
 
+class FanModeRequest(BaseModel):
+    fan_id: int
+    mode: int  # 0-5
+
+
 # API Routes
 @app.get("/api/status")
 async def get_status():
     """Get current fan status."""
     status = run_helper("get_status")
-    status["config_mode"] = config.get("mode", "auto")
+    status["fan_modes"] = config.get("fan_modes", {})
     status["fan_names"] = config.get("fan_names", {})
     status["curves"] = config.get("curves", {})
+    status["pwm_modes"] = config.get("pwm_modes", {})
     return status
 
 
 @app.post("/api/mode")
 async def set_mode(request: ModeRequest):
-    """Set global mode (auto/manual)."""
+    """Set global mode (auto/manual) - DEPRECATED, use /api/fan_mode instead.
+    
+    This endpoint is maintained for backward compatibility.
+    It sets all fans to the same mode.
+    """
     global config
     
     if request.mode not in ["auto", "manual"]:
         raise HTTPException(400, "Invalid mode. Use 'auto' or 'manual'")
     
-    config["mode"] = request.mode
-    save_config(config)
-    
-    # Apply mode to all fans
+    # Convert to hardware mode
     hw_mode = 5 if request.mode == "auto" else 1
     results = []
     
+    # Update all fans to the same mode
+    config.setdefault("fan_modes", {})
     for fan_id in range(1, 6):
+        config["fan_modes"][str(fan_id)] = hw_mode
         result = run_helper("set_mode", fan_id, hw_mode)
         results.append(result)
         
@@ -293,7 +327,8 @@ async def set_mode(request: ModeRequest):
                     point["pwm"]
                 )
     
-    return {"success": True, "mode": request.mode, "results": results}
+    save_config(config)
+    return {"success": True, "mode": request.mode, "hw_mode": hw_mode, "results": results}
 
 
 @app.post("/api/curve")
@@ -382,6 +417,67 @@ async def set_pwm_mode(request: PWMModeRequest):
     logger.info(f"PWM mode set successfully for fan {request.fan_id}: {request.pwm_mode}")
     return {"success": True, "fan_id": request.fan_id, "pwm_mode": request.pwm_mode}
 
+
+@app.post("/api/fan_mode")
+async def set_fan_mode(request: FanModeRequest):
+    """Set mode for a specific fan (0-5)."""
+    global config
+    
+    logger.info(f"Fan mode change request: fan_id={request.fan_id}, mode={request.mode}")
+    
+    if request.fan_id < 1 or request.fan_id > 5:
+        raise HTTPException(400, "Invalid fan_id. Must be 1-5")
+    
+    if request.mode not in [0, 1, 2, 3, 4, 5]:
+        raise HTTPException(400, "Invalid mode. Must be 0-5")
+    
+    # Apply the mode
+    result = run_helper("set_mode", request.fan_id, request.mode)
+    logger.info(f"Helper result: {result}")
+    
+    if "error" in result:
+        logger.error(f"Failed to set fan mode: {result['error']}")
+        raise HTTPException(500, result["error"])
+    
+    # Save to config
+    config.setdefault("fan_modes", {})
+    config["fan_modes"][str(request.fan_id)] = request.mode
+    save_config(config)
+    
+    # Apply curves if mode supports them (1, 2, 4)
+    if request.mode in [1, 2, 4]:
+        curves = config.get("curves", {}).get(str(request.fan_id), [])
+        for point in curves:
+            run_helper(
+                "set_curve",
+                request.fan_id,
+                point["point"],
+                point["temp"],
+                point["pwm"]
+            )
+    
+    logger.info(f"Fan {request.fan_id} mode set to {request.mode} ({MODE_DESCRIPTIONS.get(request.mode, 'Unknown')})")
+    return {
+        "success": True, 
+        "fan_id": request.fan_id, 
+        "mode": request.mode,
+        "mode_name": MODE_DESCRIPTIONS.get(request.mode, "Unknown")
+    }
+
+
+@app.get("/api/available_modes")
+async def get_available_modes():
+    """Get list of available fan control modes."""
+    return {
+        "modes": [
+            {"value": 0, "name": "Off", "description": "Fan completely off"},
+            {"value": 1, "name": "Manual", "description": "Manual PWM/DC control with custom curve"},
+            {"value": 2, "name": "Thermal Cruise", "description": "Maintain target temperature"},
+            {"value": 3, "name": "Fan Speed Cruise", "description": "Maintain target RPM"},
+            {"value": 4, "name": "Smart Fan IV", "description": "Advanced automatic control"},
+            {"value": 5, "name": "BIOS Control", "description": "Let motherboard BIOS control fan"}
+        ]
+    }
 
 
 @app.get("/api/config")

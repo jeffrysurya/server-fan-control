@@ -5,28 +5,28 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 const FanIcon = ({ rpm, className }) => {
   const animationDuration = rpm > 0 ? Math.max(0.1, 2 - (rpm / 1000)) : 0
   return (
-    <svg 
-      className={className} 
-      viewBox="0 0 24 24" 
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
       fill="currentColor"
       style={rpm > 0 ? { animation: `spin ${animationDuration}s linear infinite` } : {}}
     >
-      <path d="M12 11a1 1 0 1 0 0 2 1 1 0 0 0 0-2zm-1-9C6.1 2 2 5 2 9c0 2.4 1.2 4.5 3 5.7V15c0 .6.4 1 1 1h2c.6 0 1-.4 1-1v-.3c1 .2 2 .3 3 .3s2-.1 3-.3v.3c0 .6.4 1 1 1h2c.6 0 1-.4 1-1v-.3c1.8-1.2 3-3.3 3-5.7 0-4-4.1-7-9-7zm0 12c-4 0-7-2.2-7-5s3-5 7-5 7 2.2 7 5-3 5-7 5z"/>
+      <path d="M12 11a1 1 0 1 0 0 2 1 1 0 0 0 0-2zm-1-9C6.1 2 2 5 2 9c0 2.4 1.2 4.5 3 5.7V15c0 .6.4 1 1 1h2c.6 0 1-.4 1-1v-.3c1 .2 2 .3 3 .3s2-.1 3-.3v.3c0 .6.4 1 1 1h2c.6 0 1-.4 1-1v-.3c1.8-1.2 3-3.3 3-5.7 0-4-4.1-7-9-7zm0 12c-4 0-7-2.2-7-5s3-5 7-5 7 2.2 7 5-3 5-7 5z" />
     </svg>
   )
 }
 
 const ThermometerIcon = ({ className }) => (
   <svg className={className} viewBox="0 0 24 24" fill="currentColor">
-    <path d="M12 2a3 3 0 0 0-3 3v8.26a5 5 0 1 0 6 0V5a3 3 0 0 0-3-3zm0 18a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/>
+    <path d="M12 2a3 3 0 0 0-3 3v8.26a5 5 0 1 0 6 0V5a3 3 0 0 0-3-3zm0 18a3 3 0 1 1 0-6 3 3 0 0 1 0 6z" />
   </svg>
 )
 
 // Fan Card Component
-function FanCard({ fan, fanName, onNameChange, onPWMModeChange, isManual, currentTemp }) {
+function FanCard({ fan, fanName, fanMode, onNameChange, onModeChange, onPWMModeChange, currentTemp }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(fanName)
-  
+
   const handleSave = () => {
     onNameChange(fan.id, name)
     setEditing(false)
@@ -38,7 +38,7 @@ function FanCard({ fan, fanName, onNameChange, onPWMModeChange, isManual, curren
     2: 'Thermal Cruise',
     5: 'Auto (BIOS)',
   }[fan.mode] || `Mode ${fan.mode}`
-  
+
   const pwmModeLabel = fan.pwm_mode === 0 ? 'DC' : 'PWM'
 
   return (
@@ -57,7 +57,7 @@ function FanCard({ fan, fanName, onNameChange, onPWMModeChange, isManual, curren
               autoFocus
             />
           ) : (
-            <span 
+            <span
               className="font-medium cursor-pointer hover:text-blue-400"
               onClick={() => setEditing(true)}
               title="Click to rename"
@@ -66,22 +66,31 @@ function FanCard({ fan, fanName, onNameChange, onPWMModeChange, isManual, curren
             </span>
           )}
         </div>
-        <div className="flex gap-2">
-          <span className={`text-xs px-2 py-1 rounded ${isManual ? 'bg-orange-600' : 'bg-green-600'}`}>
-            {modeLabel}
-          </span>
+        <div className="flex gap-2 items-center">
+          <select
+            value={fanMode}
+            onChange={(e) => onModeChange(fan.id, parseInt(e.target.value))}
+            className="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 cursor-pointer"
+            title="Fan control mode"
+          >
+            <option value={0}>Off</option>
+            <option value={1}>Manual</option>
+            <option value={2}>Thermal Cruise</option>
+            <option value={3}>Speed Cruise</option>
+            <option value={4}>Smart Fan IV</option>
+            <option value={5}>BIOS Control</option>
+          </select>
           <button
             onClick={() => onPWMModeChange(fan.id, fan.pwm_mode === 0 ? 1 : 0)}
-            className={`text-xs px-2 py-1 rounded transition-colors ${
-              fan.pwm_mode === 1 ? 'bg-blue-600 hover:bg-blue-500' : 'bg-purple-600 hover:bg-purple-500'
-            }`}
+            className={`text-xs px-2 py-1 rounded transition-colors ${fan.pwm_mode === 1 ? 'bg-blue-600 hover:bg-blue-500' : 'bg-purple-600 hover:bg-purple-500'
+              }`}
             title="Click to toggle between DC and PWM mode"
           >
             {pwmModeLabel}
           </button>
         </div>
       </div>
-      
+
       <div className="grid grid-cols-2 gap-4 text-sm">
         <div>
           <div className="text-gray-400">RPM</div>
@@ -92,15 +101,15 @@ function FanCard({ fan, fanName, onNameChange, onPWMModeChange, isManual, curren
           <div className="text-2xl font-bold text-green-300">{fan.pwm_percent}%</div>
         </div>
       </div>
-      
+
       {/* Mini curve preview */}
       <div className="mt-3 h-16 bg-gray-900 rounded overflow-hidden">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={fan.curve} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
-            <Line 
-              type="monotone" 
-              dataKey="pwm_percent" 
-              stroke="#60a5fa" 
+            <Line
+              type="monotone"
+              dataKey="pwm_percent"
+              stroke="#60a5fa"
               strokeWidth={2}
               dot={false}
             />
@@ -144,7 +153,7 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
   const updatePoint = (index, field, value) => {
     const newPoints = [...points]
     const numValue = parseInt(value) || 0
-    
+
     if (field === 'temp') {
       newPoints[index].temp = Math.max(0, Math.min(100, numValue))
     } else if (field === 'pwm_percent') {
@@ -152,32 +161,32 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
       newPoints[index].pwm_percent = percent
       newPoints[index].pwm = Math.round(percent * 255 / 100)
     }
-    
+
     setPoints(newPoints)
     setError(null)
   }
 
   const updatePointFromDrag = (index, temp, pwm) => {
     const newPoints = [...points]
-    
+
     // Apply constraints based on neighboring points
     const prevPoint = index > 0 ? newPoints[index - 1] : null
     const nextPoint = index < newPoints.length - 1 ? newPoints[index + 1] : null
-    
+
     // Constrain temperature
     let constrainedTemp = Math.max(0, Math.min(100, temp))
     if (prevPoint) constrainedTemp = Math.max(prevPoint.temp, constrainedTemp)
     if (nextPoint) constrainedTemp = Math.min(nextPoint.temp, constrainedTemp)
-    
+
     // Constrain PWM
     let constrainedPwm = Math.max(0, Math.min(100, pwm))
     if (prevPoint) constrainedPwm = Math.max(prevPoint.pwm_percent, constrainedPwm)
     if (nextPoint) constrainedPwm = Math.min(nextPoint.pwm_percent, constrainedPwm)
-    
+
     newPoints[index].temp = Math.round(constrainedTemp)
     newPoints[index].pwm_percent = Math.round(constrainedPwm)
     newPoints[index].pwm = Math.round(constrainedPwm * 255 / 100)
-    
+
     setPoints(newPoints)
     setError(null)
   }
@@ -189,18 +198,18 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
 
   const handleMouseMove = useCallback((e) => {
     if (!dragging || !chartDimensions.width) return
-    
+
     const { index } = dragging
     const { left, top, width, height } = chartDimensions
-    
+
     // Calculate position relative to chart
     const x = e.clientX - left
     const y = e.clientY - top
-    
+
     // Convert pixel position to data values
     const temp = (x / width) * 100
     const pwm = 100 - (y / height) * 100 // Invert Y axis
-    
+
     updatePointFromDrag(index, temp, pwm)
   }, [dragging, chartDimensions])
 
@@ -221,10 +230,10 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
 
   const validateCurve = () => {
     for (let i = 1; i < points.length; i++) {
-      if (points[i].temp < points[i-1].temp) {
+      if (points[i].temp < points[i - 1].temp) {
         return 'Temperatures must be increasing'
       }
-      if (points[i].pwm < points[i-1].pwm) {
+      if (points[i].pwm < points[i - 1].pwm) {
         return 'PWM values must be increasing'
       }
     }
@@ -237,7 +246,7 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
       setError(err)
       return
     }
-    
+
     setSaving(true)
     try {
       await onSave(fanId, points.map(p => ({
@@ -265,13 +274,13 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
           <h2 className="text-xl font-bold">Edit Curve: {fanName}</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl">&times;</button>
         </div>
-        
+
         <div className="mb-2 text-sm text-gray-400">
           💡 Drag points on the chart or use input fields below for precise control
         </div>
-        
+
         {/* Chart */}
-        <div 
+        <div
           ref={chartRef}
           className="h-64 mb-6 bg-gray-900 rounded p-2 select-none"
           style={{ cursor: dragging ? 'grabbing' : 'default' }}
@@ -279,26 +288,26 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ top: 10, right: 30, bottom: 20, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-              <XAxis 
-                dataKey="temp" 
+              <XAxis
+                dataKey="temp"
                 label={{ value: 'Temperature (°C)', position: 'bottom', fill: '#9ca3af' }}
                 stroke="#9ca3af"
                 domain={[0, 100]}
               />
-              <YAxis 
+              <YAxis
                 label={{ value: 'PWM %', angle: -90, position: 'insideLeft', fill: '#9ca3af' }}
                 stroke="#9ca3af"
                 domain={[0, 100]}
               />
-              <Tooltip 
+              <Tooltip
                 contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151' }}
                 labelFormatter={(v) => `${v}°C`}
                 formatter={(v) => [`${v}%`, 'PWM']}
               />
-              <Line 
-                type="monotone" 
-                dataKey="pwm" 
-                stroke="#60a5fa" 
+              <Line
+                type="monotone"
+                dataKey="pwm"
+                stroke="#60a5fa"
                 strokeWidth={3}
                 dot={false}
               />
@@ -307,7 +316,7 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
                 const x = (point.temp / 100) * (chartDimensions.width || 1)
                 const y = ((100 - point.pwm_percent) / 100) * (chartDimensions.height || 1)
                 const isDragging = dragging?.index === idx
-                
+
                 return (
                   <g key={point.point}>
                     <circle
@@ -338,7 +347,7 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
             </LineChart>
           </ResponsiveContainer>
         </div>
-        
+
         {/* Point editors */}
         <div className="space-y-3">
           <div className="grid grid-cols-3 gap-4 text-sm text-gray-400 font-medium">
@@ -346,7 +355,7 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
             <div>Temperature (°C)</div>
             <div>PWM (%)</div>
           </div>
-          
+
           {points.map((point, idx) => (
             <div key={point.point} className="grid grid-cols-3 gap-4 items-center">
               <div className="text-gray-300">Point {point.point}</div>
@@ -369,21 +378,21 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
             </div>
           ))}
         </div>
-        
+
         {error && (
           <div className="mt-4 p-3 bg-red-900/50 border border-red-700 rounded text-red-300">
             {error}
           </div>
         )}
-        
+
         <div className="mt-6 flex justify-end gap-3">
-          <button 
+          <button
             onClick={onClose}
             className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded"
           >
             Cancel
           </button>
-          <button 
+          <button
             onClick={handleSave}
             disabled={saving}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded disabled:opacity-50"
@@ -399,7 +408,7 @@ function CurveEditor({ fanId, fanName, curve, onSave, onClose }) {
 // Temperature Display
 function TemperatureDisplay({ temps }) {
   const tempEntries = Object.entries(temps).filter(([_, v]) => v > 0 && v < 100)
-  
+
   return (
     <div className="fan-card">
       <h2 className="text-lg font-bold mb-3 flex items-center gap-2">
@@ -424,9 +433,8 @@ function TemperatureDisplay({ temps }) {
 export default function App() {
   const [status, setStatus] = useState(null)
   const [config, setConfig] = useState(null)
-  const [mode, setMode] = useState('auto')
+  const [fanModes, setFanModes] = useState({}) // Per-fan modes
   const [editingFan, setEditingFan] = useState(null)
-  const [switching, setSwitching] = useState(false)
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState(null)
 
@@ -434,40 +442,40 @@ export default function App() {
   useEffect(() => {
     let ws = null
     let reconnectTimeout = null
-    
+
     const connect = () => {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       ws = new WebSocket(`${protocol}//${window.location.host}/ws`)
-      
+
       ws.onopen = () => {
         setConnected(true)
         setError(null)
       }
-      
+
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
           setStatus(data)
-          if (data.config_mode) {
-            setMode(data.config_mode)
+          if (data.fan_modes) {
+            setFanModes(data.fan_modes)
           }
         } catch (e) {
           console.error('Failed to parse status:', e)
         }
       }
-      
+
       ws.onclose = () => {
         setConnected(false)
         reconnectTimeout = setTimeout(connect, 2000)
       }
-      
+
       ws.onerror = () => {
         setError('WebSocket error')
       }
     }
-    
+
     connect()
-    
+
     return () => {
       if (ws) ws.close()
       if (reconnectTimeout) clearTimeout(reconnectTimeout)
@@ -482,20 +490,19 @@ export default function App() {
       .catch(e => setError('Failed to load config'))
   }, [])
 
-  const handleModeChange = async (newMode) => {
-    setSwitching(true)
+  const handleFanModeChange = async (fanId, newMode) => {
     try {
-      const res = await fetch('/api/mode', {
+      const res = await fetch('/api/fan_mode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: newMode })
+        body: JSON.stringify({ fan_id: fanId, mode: newMode })
       })
-      if (!res.ok) throw new Error('Failed to change mode')
-      setMode(newMode)
+      if (!res.ok) throw new Error('Failed to change fan mode')
+
+      // Update local state
+      setFanModes(prev => ({ ...prev, [fanId]: newMode }))
     } catch (e) {
       setError(e.message)
-    } finally {
-      setSwitching(false)
     }
   }
 
@@ -509,7 +516,7 @@ export default function App() {
       const data = await res.json()
       throw new Error(data.detail || 'Failed to save curve')
     }
-    
+
     // Update local config
     setConfig(prev => ({
       ...prev,
@@ -563,7 +570,7 @@ export default function App() {
           to { transform: rotate(360deg); }
         }
       `}</style>
-      
+
       {/* Header */}
       <div className="max-w-6xl mx-auto">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
@@ -580,44 +587,19 @@ export default function App() {
               {status?.hwmon && <span className="ml-2">• {status.hwmon}</span>}
             </p>
           </div>
-          
-          {/* Mode Toggle */}
-          <div className="flex items-center gap-3 bg-gray-800 rounded-lg p-1">
-            <button
-              onClick={() => handleModeChange('auto')}
-              disabled={switching}
-              className={`px-4 py-2 rounded-md transition-colors ${
-                mode === 'auto' 
-                  ? 'bg-green-600 text-white' 
-                  : 'text-gray-400 hover:text-white'
-              }`}
-            >
-              Auto (BIOS)
-            </button>
-            <button
-              onClick={() => handleModeChange('manual')}
-              disabled={switching}
-              className={`px-4 py-2 rounded-md transition-colors ${
-                mode === 'manual' 
-                  ? 'bg-orange-600 text-white' 
-                  : 'text-gray-400 hover:text-white'
-              }`}
-            >
-              Manual Curve
-            </button>
-          </div>
+
         </div>
-        
+
         {error && (
           <div className="mb-4 p-3 bg-red-900/50 border border-red-700 rounded text-red-300">
             {error}
             <button onClick={() => setError(null)} className="ml-2 text-red-400 hover:text-white">&times;</button>
           </div>
         )}
-        
+
         {/* Temperatures */}
         {status?.temps && <TemperatureDisplay temps={status.temps} />}
-        
+
         {/* Fan Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
           {status?.fans?.map((fan) => (
@@ -625,9 +607,10 @@ export default function App() {
               <FanCard
                 fan={fan}
                 fanName={fanNames[fan.id] || `Fan ${fan.id}`}
+                fanMode={fanModes[fan.id] || fan.mode || 5}
                 onNameChange={handleNameChange}
+                onModeChange={handleFanModeChange}
                 onPWMModeChange={handlePWMModeChange}
-                isManual={mode === 'manual'}
                 currentTemp={cpuTemp}
               />
               <button
@@ -643,15 +626,22 @@ export default function App() {
             </div>
           ))}
         </div>
-        
+
         {/* Help text */}
         <div className="mt-6 text-sm text-gray-500">
-          <p><strong>Auto (BIOS):</strong> Fans controlled by motherboard SmartFan IV curves</p>
-          <p><strong>Manual Curve:</strong> Custom temperature-based curves applied via OS. Click the edit icon on each fan to customize.</p>
-          <p><strong>PWM Mode:</strong> Toggle between DC (voltage-based) and PWM (pulse width modulation) control. Click the mode badge to switch.</p>
+          <p><strong>Fan Modes:</strong> Each fan can be controlled independently:</p>
+          <ul className="list-disc ml-6 mt-2 space-y-1">
+            <li><strong>Off:</strong> Fan completely off (use with caution)</li>
+            <li><strong>Manual:</strong> Custom temperature-based curve control</li>
+            <li><strong>Thermal Cruise:</strong> Maintain target temperature</li>
+            <li><strong>Speed Cruise:</strong> Maintain target RPM</li>
+            <li><strong>Smart Fan IV:</strong> Advanced automatic control</li>
+            <li><strong>BIOS Control:</strong> Let motherboard firmware control the fan</li>
+          </ul>
+          <p className="mt-2"><strong>PWM Mode:</strong> Toggle between DC (voltage-based) and PWM (pulse width modulation) control.</p>
         </div>
       </div>
-      
+
       {/* Curve Editor Modal */}
       {editingFan && config && (
         <CurveEditor

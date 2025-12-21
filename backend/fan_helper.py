@@ -158,14 +158,23 @@ def get_status():
     return status
 
 def set_mode(pwm_num, mode):
-    """Set fan mode (1=manual, 5=auto/BIOS)."""
+    """Set fan mode.
+    
+    Modes:
+        0: Manual mode (full off)
+        1: Manual mode (PWM/DC control)
+        2: Thermal Cruise mode
+        3: Fan Speed Cruise mode
+        4: Smart Fan IV mode
+        5: Smart Fan IV+ mode (BIOS control)
+    """
     hwmon = find_hwmon()
     if not hwmon:
         return {"error": "nct6779 not found"}
     
     mode = int(mode)
-    if mode not in [0, 1, 2, 5]:
-        return {"error": f"Invalid mode: {mode}"}
+    if mode not in [0, 1, 2, 3, 4, 5]:
+        return {"error": f"Invalid mode: {mode}. Must be 0-5"}
     
     path = os.path.join(hwmon, f"pwm{pwm_num}_enable")
     if write_file(path, mode):
