@@ -285,18 +285,39 @@ def main():
         if cmd == "get_status":
             result = get_status()
         elif cmd == "set_mode" and len(sys.argv) >= 4:
+            print(f"[FAN-CONTROL] Setting fan {sys.argv[2]} to mode {sys.argv[3]}", file=sys.stderr, flush=True)
             result = set_mode(int(sys.argv[2]), int(sys.argv[3]))
+            if "success" in result:
+                print(f"[FAN-CONTROL] ✓ Fan {sys.argv[2]} mode set to {sys.argv[3]}", file=sys.stderr, flush=True)
+            else:
+                print(f"[FAN-CONTROL] ✗ Failed to set fan {sys.argv[2]} mode: {result.get('error')}", file=sys.stderr, flush=True)
         elif cmd == "set_pwm_mode" and len(sys.argv) >= 4:
+            mode_name = "DC" if sys.argv[3] == "0" else "PWM"
+            print(f"[FAN-CONTROL] Setting fan {sys.argv[2]} PWM mode to {mode_name}", file=sys.stderr, flush=True)
             result = set_pwm_mode(int(sys.argv[2]), int(sys.argv[3]))
+            if "success" in result:
+                print(f"[FAN-CONTROL] ✓ Fan {sys.argv[2]} PWM mode set to {mode_name}", file=sys.stderr, flush=True)
+            else:
+                print(f"[FAN-CONTROL] ✗ Failed to set fan {sys.argv[2]} PWM mode: {result.get('error')}", file=sys.stderr, flush=True)
         elif cmd == "set_pwm" and len(sys.argv) >= 4:
+            print(f"[FAN-CONTROL] Setting fan {sys.argv[2]} PWM to {sys.argv[3]}", file=sys.stderr, flush=True)
             result = set_pwm(int(sys.argv[2]), int(sys.argv[3]))
+            if "success" in result:
+                print(f"[FAN-CONTROL] ✓ Fan {sys.argv[2]} PWM set to {sys.argv[3]}", file=sys.stderr, flush=True)
+            else:
+                print(f"[FAN-CONTROL] ✗ Failed to set fan {sys.argv[2]} PWM: {result.get('error')}", file=sys.stderr, flush=True)
         elif cmd == "set_curve" and len(sys.argv) >= 6:
+            print(f"[FAN-CONTROL] Setting fan {sys.argv[2]} curve point {sys.argv[3]}: {sys.argv[4]}°C → PWM {sys.argv[5]}", file=sys.stderr, flush=True)
             result = set_curve_point(
                 int(sys.argv[2]),  # pwm_num
                 int(sys.argv[3]),  # point
                 float(sys.argv[4]),  # temp
                 int(sys.argv[5])  # pwm
             )
+            if "success" in result:
+                print(f"[FAN-CONTROL] ✓ Fan {sys.argv[2]} curve point {sys.argv[3]} set", file=sys.stderr, flush=True)
+            else:
+                print(f"[FAN-CONTROL] ✗ Failed to set fan {sys.argv[2]} curve: {result.get('error')}", file=sys.stderr, flush=True)
         elif cmd == "get_curve" and len(sys.argv) >= 3:
             result = get_curve(int(sys.argv[2]))
         else:
