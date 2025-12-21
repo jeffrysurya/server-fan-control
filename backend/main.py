@@ -67,7 +67,6 @@ MODE_DESCRIPTIONS = {
     1: "Manual",
     2: "Thermal Cruise",
     3: "Fan Speed Cruise",
-    4: "Smart Fan IV",
     5: "BIOS Control"
 }
 
@@ -157,8 +156,8 @@ def apply_saved_settings():
         
         logger.info(f"Fan {fan_id} set to mode {mode} ({MODE_DESCRIPTIONS.get(mode, 'Unknown')})") 
         
-        # Apply curve points for modes that support curves (1, 2, 4)
-        if mode in [1, 2, 4]:
+        # Apply curve points for modes that support curves (1, 2)
+        if mode in [1, 2]:
             curves = config.get("curves", {}).get(str(fan_id), [])
             for point in curves:
                 run_helper(
@@ -428,8 +427,8 @@ async def set_fan_mode(request: FanModeRequest):
     if request.fan_id < 1 or request.fan_id > 5:
         raise HTTPException(400, "Invalid fan_id. Must be 1-5")
     
-    if request.mode not in [0, 1, 2, 3, 4, 5]:
-        raise HTTPException(400, "Invalid mode. Must be 0-5")
+    if request.mode not in [0, 1, 2, 3, 5]:
+        raise HTTPException(400, "Invalid mode. Must be 0, 1, 2, 3, or 5 (mode 4 not supported)")
     
     # Apply the mode
     result = run_helper("set_mode", request.fan_id, request.mode)
@@ -444,8 +443,8 @@ async def set_fan_mode(request: FanModeRequest):
     config["fan_modes"][str(request.fan_id)] = request.mode
     save_config(config)
     
-    # Apply curves if mode supports them (1, 2, 4)
-    if request.mode in [1, 2, 4]:
+    # Apply curves if mode supports them (1, 2)
+    if request.mode in [1, 2]:
         curves = config.get("curves", {}).get(str(request.fan_id), [])
         for point in curves:
             run_helper(
@@ -474,7 +473,6 @@ async def get_available_modes():
             {"value": 1, "name": "Manual", "description": "Manual PWM/DC control with custom curve"},
             {"value": 2, "name": "Thermal Cruise", "description": "Maintain target temperature"},
             {"value": 3, "name": "Fan Speed Cruise", "description": "Maintain target RPM"},
-            {"value": 4, "name": "Smart Fan IV", "description": "Advanced automatic control"},
             {"value": 5, "name": "BIOS Control", "description": "Let motherboard BIOS control fan"}
         ]
     }

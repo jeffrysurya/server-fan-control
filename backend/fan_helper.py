@@ -165,16 +165,17 @@ def set_mode(pwm_num, mode):
         1: Manual mode (PWM/DC control)
         2: Thermal Cruise mode
         3: Fan Speed Cruise mode
-        4: Smart Fan IV mode
         5: Smart Fan IV+ mode (BIOS control)
+    
+    Note: Mode 4 (Smart Fan IV) is not available on this chipset.
     """
     hwmon = find_hwmon()
     if not hwmon:
         return {"error": "nct6779 not found"}
     
     mode = int(mode)
-    if mode not in [0, 1, 2, 3, 4, 5]:
-        return {"error": f"Invalid mode: {mode}. Must be 0-5"}
+    if mode not in [0, 1, 2, 3, 5]:
+        return {"error": f"Invalid mode: {mode}. Must be 0, 1, 2, 3, or 5 (mode 4 not supported)"}
     
     path = os.path.join(hwmon, f"pwm{pwm_num}_enable")
     if write_file(path, mode):
@@ -192,24 +193,24 @@ def set_pwm_mode(pwm_num, pwm_mode):
         return {"error": f"Invalid PWM mode: {pwm_mode}. Use 0 for DC or 1 for PWM"}
     
     path = os.path.join(hwmon, f"pwm{pwm_num}_mode")
-    print(f"[DEBUG] Setting PWM mode for pwm{pwm_num}: mode={pwm_mode}, path={path}", flush=True)
+    print(f"[DEBUG] Setting PWM mode for pwm{pwm_num}: mode={pwm_mode}, path={path}", file=sys.stderr, flush=True)
     
     # Check if file exists
     if not os.path.exists(path):
-        print(f"[DEBUG] PWM mode file does not exist: {path}", flush=True)
+        print(f"[DEBUG] PWM mode file does not exist: {path}", file=sys.stderr, flush=True)
         return {"error": f"PWM mode file not found: {path}"}
     
     # Try to read current value
     current = read_file(path)
-    print(f"[DEBUG] Current PWM mode value: {current}", flush=True)
+    print(f"[DEBUG] Current PWM mode value: {current}", file=sys.stderr, flush=True)
     
     if write_file(path, pwm_mode):
         # Verify the write
         new_value = read_file(path)
-        print(f"[DEBUG] PWM mode set successfully. New value: {new_value}", flush=True)
+        print(f"[DEBUG] PWM mode set successfully. New value: {new_value}", file=sys.stderr, flush=True)
         return {"success": True, "pwm": pwm_num, "pwm_mode": pwm_mode}
     
-    print(f"[DEBUG] Failed to write PWM mode to {path}", flush=True)
+    print(f"[DEBUG] Failed to write PWM mode to {path}", file=sys.stderr, flush=True)
     return {"error": f"Failed to set PWM mode for pwm{pwm_num}"}
 
 

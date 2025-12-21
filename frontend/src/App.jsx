@@ -77,7 +77,6 @@ function FanCard({ fan, fanName, fanMode, onNameChange, onModeChange, onPWMModeC
             <option value={1}>Manual</option>
             <option value={2}>Thermal Cruise</option>
             <option value={3}>Speed Cruise</option>
-            <option value={4}>Smart Fan IV</option>
             <option value={5}>BIOS Control</option>
           </select>
           <button
@@ -635,10 +634,10 @@ export default function App() {
             <li><strong>Manual:</strong> Custom temperature-based curve control</li>
             <li><strong>Thermal Cruise:</strong> Maintain target temperature</li>
             <li><strong>Speed Cruise:</strong> Maintain target RPM</li>
-            <li><strong>Smart Fan IV:</strong> Advanced automatic control</li>
             <li><strong>BIOS Control:</strong> Let motherboard firmware control the fan</li>
           </ul>
           <p className="mt-2"><strong>PWM Mode:</strong> Toggle between DC (voltage-based) and PWM (pulse width modulation) control.</p>
+          <p className="mt-2 text-xs text-gray-600">Note: Mode 4 (Smart Fan IV) is not available on this chipset.</p>
         </div>
       </div>
 
