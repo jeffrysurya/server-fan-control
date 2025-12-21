@@ -23,7 +23,7 @@ const ThermometerIcon = ({ className }) => (
 )
 
 // Fan Card Component
-function FanCard({ fan, fanName, fanMode, onNameChange, onModeChange, onPWMChange, onRPMChange, onTempSourceChange, onPWMModeChange, onEditCurve, currentTemp, tempSensors, currentTempSource }) {
+function FanCard({ fan, fanName, fanMode, onNameChange, onModeChange, onPWMChange, onRPMChange, onTempSourceChange, onSoftwareControlToggle, onSoftwareControlSourceChange, onPWMModeChange, onEditCurve, currentTemp, tempSensors, currentTempSource }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(fanName)
   const [localPWM, setLocalPWM] = useState(fan.pwm_percent)
@@ -187,8 +187,8 @@ function FanCard({ fan, fanName, fanMode, onNameChange, onModeChange, onPWMChang
         </ResponsiveContainer>
       </div>
 
-      {/* Edit curve button - only for mode 2 */}
-      {fanMode === 2 && (
+      {/* Edit curve button - for mode 2 OR software control */}
+      {(fanMode === 2 || fan.softwareControlEnabled) && (
         <button
           onClick={() => onEditCurve(fan.id)}
           className="mt-2 w-full py-2 px-3 bg-blue-600 hover:bg-blue-500 rounded text-sm font-medium transition-colors flex items-center justify-center gap-2"
@@ -218,6 +218,42 @@ function FanCard({ fan, fanName, fanMode, onNameChange, onModeChange, onPWMChang
           </select>
         </div>
       )}
+
+      {/* Software Control Section */}
+      <div className="mt-3 px-2 border-t border-gray-700 pt-3">
+        <div className="flex items-center justify-between mb-2">
+          <label className="text-xs text-gray-400">Software Control</label>
+          <input
+            type="checkbox"
+            checked={fan.softwareControlEnabled || false}
+            onChange={(e) => onSoftwareControlToggle(fan.id, e.target.checked)}
+            className="w-4 h-4 cursor-pointer"
+          />
+        </div>
+
+        {fan.softwareControlEnabled && (
+          <div className="space-y-2">
+            <div>
+              <label className="text-xs text-gray-400 block mb-1">External Temp Source:</label>
+              <select
+                value={fan.softwareControlSource || ''}
+                onChange={(e) => onSoftwareControlSourceChange(fan.id, e.target.value)}
+                className="w-full text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 cursor-pointer"
+              >
+                <option value="">Select sensor...</option>
+                {fan.allTempSensors?.map((sensor, idx) => (
+                  <option key={idx} value={sensor.path}>
+                    {sensor.display_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="text-xs text-green-400">
+              ✓ Using software curve control
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -522,13 +558,289 @@ function TemperatureDisplay({ temps }) {
   )
 }
 
+// Auto-Tune Dialog Component
+function AutoTuneDialog({ onClose, onApply, allTempSensors }) {
+  const [step, setStep] = useState(1) // 1: Setup, 2: Running, 3: Results
+  const [profile, setProfile] = useState('balanced')
+  const [selectedFans, setSelectedFans] = useState([1, 2, 3, 4, 5])
+  const [tempSource, setTempSource] = useState('')
+  const [progress, setProgress] = useState(0)
+  const [currentAction, setCurrentAction] = useState('')
+  const [results, setResults] = useState(null)
+  const [error, setError] = useState(null)
+
+  // Poll for status when running
+  useEffect(() => {
+    if (step !== 2) return
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch('/api/auto_tune/status')
+        const data = await res.json()
+
+        setProgress(data.progress)
+        setCurrentAction(data.current_action)
+
+        if (!data.running && data.results && Object.keys(data.results).length > 0) {
+          setResults(data.results)
+          setStep(3)
+        }
+      } catch (e) {
+        console.error('Failed to get auto-tune status:', e)
+      }
+    }, 1000)
+
+    return () => clearInterval(interval)
+  }, [step])
+
+  const handleStart = async () => {
+    if (!tempSource) {
+      setError('Please select a temperature source')
+      return
+    }
+
+    try {
+      const res = await fetch('/api/auto_tune/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fan_ids: selectedFans,
+          temp_source: tempSource,
+          profile: profile
+        })
+      })
+
+      if (!res.ok) throw new Error('Failed to start auto-tune')
+
+      setStep(2)
+      setProgress(0)
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const handleApply = async () => {
+    try {
+      const res = await fetch('/api/auto_tune/apply', {
+        method: 'POST'
+      })
+
+      if (!res.ok) throw new Error('Failed to apply curves')
+
+      onApply()
+      onClose()
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const handleCancel = async () => {
+    if (step === 2) {
+      await fetch('/api/auto_tune/cancel', { method: 'POST' })
+    }
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className="bg-gray-800 rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+        {/* Header */}
+        <div className="p-6 border-b border-gray-700">
+          <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+            <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 2L2 7l10 5 10-5-10-5z" />
+              <path d="M2 17l10 5 10-5" />
+              <path d="M2 12l10 5 10-5" />
+            </svg>
+            Auto-Tune Fan Curves
+          </h2>
+          <p className="text-gray-400 text-sm mt-1">
+            {step === 1 && 'Configure auto-tuning settings'}
+            {step === 2 && 'Calibrating fans and generating curves...'}
+            {step === 3 && 'Review and apply generated curves'}
+          </p>
+        </div>
+
+        {/* Content */}
+        <div className="p-6">
+          {error && (
+            <div className="mb-4 p-3 bg-red-900/50 border border-red-700 rounded text-red-300">
+              {error}
+              <button onClick={() => setError(null)} className="ml-2 text-red-400 hover:text-white">×</button>
+            </div>
+          )}
+
+          {/* Step 1: Setup */}
+          {step === 1 && (
+            <div className="space-y-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Select Fans to Tune:</label>
+                <div className="grid grid-cols-5 gap-2">
+                  {[1, 2, 3, 4, 5].map(fanId => (
+                    <button
+                      key={fanId}
+                      onClick={() => {
+                        setSelectedFans(prev =>
+                          prev.includes(fanId) ? prev.filter(id => id !== fanId) : [...prev, fanId]
+                        )
+                      }}
+                      className={`py-2 px-4 rounded font-medium transition-colors ${selectedFans.includes(fanId)
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                        }`}
+                    >
+                      Fan {fanId}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Temperature Source:</label>
+                <select
+                  value={tempSource}
+                  onChange={(e) => setTempSource(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-700 text-white rounded border border-gray-600 focus:border-blue-500 focus:outline-none"
+                >
+                  <option value="">Select sensor...</option>
+                  {allTempSensors.map((sensor, idx) => (
+                    <option key={idx} value={sensor.path}>
+                      {sensor.display_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Profile:</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {['silent', 'balanced', 'performance'].map(p => (
+                    <button
+                      key={p}
+                      onClick={() => setProfile(p)}
+                      className={`py-3 px-4 rounded font-medium transition-colors ${profile === p
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                        }`}
+                    >
+                      <div className="font-bold capitalize">{p}</div>
+                      <div className="text-xs mt-1">
+                        {p === 'silent' && 'Quieter, warmer'}
+                        {p === 'balanced' && 'Best balance'}
+                        {p === 'performance' && 'Cooler, louder'}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-yellow-900/30 border border-yellow-700 rounded p-3 text-yellow-300 text-sm">
+                <strong>⚠️ Note:</strong> Auto-tuning will take approximately {selectedFans.length * 30 + 30} seconds.
+                Fans will be tested at various speeds during this process.
+              </div>
+            </div>
+          )}
+
+          {/* Step 2: Running */}
+          {step === 2 && (
+            <div className="space-y-6">
+              <div>
+                <div className="flex justify-between text-sm text-gray-400 mb-2">
+                  <span>{currentAction}</span>
+                  <span>{progress}%</span>
+                </div>
+                <div className="w-full bg-gray-700 rounded-full h-3">
+                  <div
+                    className="bg-blue-600 h-3 rounded-full transition-all duration-300"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="text-center py-8">
+                <div className="inline-block animate-spin rounded-full h-16 w-16 border-4 border-gray-600 border-t-blue-500 mb-4" />
+                <p className="text-gray-400">Please wait while we calibrate your fans...</p>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Results */}
+          {step === 3 && results && (
+            <div className="space-y-4">
+              <div className="bg-green-900/30 border border-green-700 rounded p-3 text-green-300">
+                <strong>✓ Auto-tune complete!</strong> Generated curves for {Object.keys(results.generated_curves || {}).length} fans.
+              </div>
+
+              {results.temp_profile && (
+                <div className="bg-gray-700 rounded p-3">
+                  <div className="text-sm font-medium text-gray-300 mb-2">Temperature Profile:</div>
+                  <div className="grid grid-cols-3 gap-2 text-sm">
+                    <div>
+                      <div className="text-gray-400">Idle</div>
+                      <div className="text-white font-bold">{results.temp_profile.idle_temp?.toFixed(1)}°C</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-400">Average</div>
+                      <div className="text-white font-bold">{results.temp_profile.avg_temp?.toFixed(1)}°C</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-400">Max</div>
+                      <div className="text-white font-bold">{results.temp_profile.max_temp?.toFixed(1)}°C</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="text-sm text-gray-400">
+                Curves have been optimized for <strong className="text-white">{results.profile}</strong> profile.
+                Click Apply to use these curves.
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="p-6 border-t border-gray-700 flex justify-end gap-3">
+          <button
+            onClick={handleCancel}
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors"
+          >
+            {step === 3 ? 'Close' : 'Cancel'}
+          </button>
+
+          {step === 1 && (
+            <button
+              onClick={handleStart}
+              disabled={selectedFans.length === 0 || !tempSource}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded transition-colors"
+            >
+              Start Auto-Tune
+            </button>
+          )}
+
+          {step === 3 && (
+            <button
+              onClick={handleApply}
+              className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded transition-colors"
+            >
+              Apply Curves
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // Main App
 export default function App() {
   const [status, setStatus] = useState(null)
   const [config, setConfig] = useState(null)
   const [fanModes, setFanModes] = useState({}) // Per-fan modes
   const [tempSensors, setTempSensors] = useState([])
+  const [allTempSensors, setAllTempSensors] = useState([])
   const [editingFan, setEditingFan] = useState(null)
+  const [showAutoTune, setShowAutoTune] = useState(false)
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState(null)
 
@@ -588,6 +900,12 @@ export default function App() {
       .then(res => res.json())
       .then(data => setTempSensors(data.sensors || []))
       .catch(e => console.error('Failed to fetch temp sensors:', e))
+
+    // Fetch all temperature sensors (for software control)
+    fetch('/api/temp_sensors_all')
+      .then(res => res.json())
+      .then(data => setAllTempSensors(data.sensors || []))
+      .catch(e => console.error('Failed to fetch all temp sensors:', e))
   }, [])
 
   const handleFanModeChange = async (fanId, newMode) => {
@@ -711,6 +1029,52 @@ export default function App() {
     }
   }
 
+  const handleSoftwareControlToggle = async (fanId, enabled) => {
+    try {
+      const tempSource = enabled ? allTempSensors[0]?.path : null
+      const res = await fetch('/api/software_control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fan_id: fanId,
+          enabled: enabled,
+          temp_source: tempSource
+        })
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || 'Failed to toggle software control')
+      }
+      // Reload config to get updated software control settings
+      fetchConfig()
+    } catch (e) {
+      setError(e.message)
+      console.error('Failed to toggle software control:', e)
+    }
+  }
+
+  const handleSoftwareControlSourceChange = async (fanId, tempSource) => {
+    try {
+      const res = await fetch('/api/software_control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fan_id: fanId,
+          enabled: true,
+          temp_source: tempSource
+        })
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || 'Failed to set temp source')
+      }
+      fetchConfig()
+    } catch (e) {
+      setError(e.message)
+      console.error('Failed to set software control source:', e)
+    }
+  }
+
   const fanNames = config?.fan_names || {}
   const curves = config?.curves || {}
   const cpuTemp = status?.temps?.['CPU (Tctl)'] || status?.temps?.CPUTIN
@@ -741,6 +1105,18 @@ export default function App() {
             </p>
           </div>
 
+          <button
+            onClick={() => setShowAutoTune(true)}
+            className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded font-medium transition-colors flex items-center gap-2"
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 2L2 7l10 5 10-5-10-5z" />
+              <path d="M2 17l10 5 10-5" />
+              <path d="M2 12l10 5 10-5" />
+            </svg>
+            Auto-Tune
+          </button>
+
         </div>
 
         {error && (
@@ -758,7 +1134,12 @@ export default function App() {
           {status?.fans?.map((fan) => (
             <div key={fan.id}>
               <FanCard
-                fan={fan}
+                fan={{
+                  ...fan,
+                  softwareControlEnabled: config?.software_control?.[fan.id]?.enabled || false,
+                  softwareControlSource: config?.software_control?.[fan.id]?.temp_source || '',
+                  allTempSensors: allTempSensors
+                }}
                 fanName={fanNames[fan.id] || `Fan ${fan.id}`}
                 fanMode={fanModes[fan.id] || fan.mode || 5}
                 onNameChange={handleNameChange}
@@ -766,6 +1147,8 @@ export default function App() {
                 onPWMChange={handlePWMChange}
                 onRPMChange={handleRPMChange}
                 onTempSourceChange={handleTempSourceChange}
+                onSoftwareControlToggle={handleSoftwareControlToggle}
+                onSoftwareControlSourceChange={handleSoftwareControlSourceChange}
                 onPWMModeChange={handlePWMModeChange}
                 onEditCurve={setEditingFan}
                 currentTemp={cpuTemp}
@@ -799,6 +1182,18 @@ export default function App() {
           curve={curves[editingFan] || status?.fans?.find(f => f.id === editingFan)?.curve || []}
           onSave={handleSaveCurve}
           onClose={() => setEditingFan(null)}
+        />
+      )}
+
+      {/* Auto-Tune Dialog */}
+      {showAutoTune && (
+        <AutoTuneDialog
+          onClose={() => setShowAutoTune(false)}
+          onApply={() => {
+            fetchConfig()
+            setShowAutoTune(false)
+          }}
+          allTempSensors={allTempSensors}
         />
       )}
     </div>

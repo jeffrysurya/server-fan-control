@@ -49,8 +49,17 @@ def write_file(path, value):
             f.write(str(value))
         return True
     except (IOError, PermissionError) as e:
-        print(f"Error writing to {path}: {e}", file=sys.stderr)
+        print(f"Error writing to {path}: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
         return False
+
+def read_temp_sensor(sensor_path):
+    """Read temperature from any hwmon sensor (returns °C)."""
+    try:
+        with open(sensor_path) as f:
+            return int(f.read().strip()) / 1000.0
+    except Exception as e:
+        print(f"Error reading temp sensor {sensor_path}: {e}", file=sys.stderr, flush=True)
+        return None
 
 def get_status():
     """Get current status of all fans."""
@@ -256,8 +265,14 @@ def set_temp_source(pwm_num, temp_source):
         return {"error": "nct6779 not found"}
     
     temp_source = int(temp_source)
-    if temp_source < 1 or temp_source > 13:
-        return {"error": f"Invalid temp source: {temp_source}. Must be 1-13"}
+    if temp_source < 1 or temp_source > 12:
+        return {"error": f"Invalid temp source: {temp_source}. Must be 1-12"}
+    
+    # Check current mode - temp source can only be set in modes 1, 2, 3
+    mode_path = os.path.join(hwmon, f"pwm{pwm_num}_enable")
+    current_mode = read_file(mode_path)
+    if current_mode and int(current_mode) not in [1, 2, 3]:
+        return {"error": f"Cannot set temp source in mode {current_mode}. Fan must be in mode 1, 2, or 3"}
     
     path = os.path.join(hwmon, f"pwm{pwm_num}_temp_sel")
     

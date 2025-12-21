@@ -131,6 +131,369 @@ def run_helper(command: str, *args) -> dict:
         return {"error": str(e)}
 
 
+class SoftwareController:
+    """Software-based fan control using external temperature sensors."""
+    
+    def __init__(self):
+        self.running = False
+        self.task = None
+        self.last_pwm = {}  # Track last PWM for each fan
+        self.last_temp = {}  # Track last temperature for each fan
+        
+    def calculate_pwm_from_curve(self, fan_id: int, temp: float, curve: list, 
+                                  hysteresis_temp: float = 2.0,
+                                  ramp_down_rate: int = 5) -> int:
+        """Calculate PWM value from temperature using curve interpolation with hysteresis.
+        
+        Args:
+            fan_id: Fan ID
+            temp: Current temperature
+            curve: Temperature curve points
+            hysteresis_temp: Temperature hysteresis in °C (default 2°C)
+            ramp_down_rate: Max PWM decrease per second when cooling (default 5)
+        
+        Returns:
+            PWM value (0-255)
+        """
+        if not curve or len(curve) < 2:
+            return 128  # Default to 50%
+        
+        # Sort curve by temperature
+        sorted_curve = sorted(curve, key=lambda p: p["temp"])
+        
+        # Calculate target PWM from curve
+        target_pwm = 128
+        
+        # Below minimum temp
+        if temp <= sorted_curve[0]["temp"]:
+            target_pwm = sorted_curve[0]["pwm"]
+        # Above maximum temp
+        elif temp >= sorted_curve[-1]["temp"]:
+            target_pwm = sorted_curve[-1]["pwm"]
+        else:
+            # Interpolate between points
+            for i in range(len(sorted_curve) - 1):
+                if sorted_curve[i]["temp"] <= temp <= sorted_curve[i + 1]["temp"]:
+                    # Linear interpolation
+                    t1, p1 = sorted_curve[i]["temp"], sorted_curve[i]["pwm"]
+                    t2, p2 = sorted_curve[i + 1]["temp"], sorted_curve[i + 1]["pwm"]
+                    
+                    ratio = (temp - t1) / (t2 - t1)
+                    target_pwm = int(p1 + ratio * (p2 - p1))
+                    break
+        
+        # Apply hysteresis
+        last_pwm = self.last_pwm.get(fan_id, target_pwm)
+        last_temp = self.last_temp.get(fan_id, temp)
+        
+        # Temperature is rising - aggressive response
+        if temp > last_temp + 0.5:  # 0.5°C threshold to avoid noise
+            # Immediately increase PWM
+            final_pwm = target_pwm
+        # Temperature is falling - slow response with hysteresis
+        elif temp < last_temp - hysteresis_temp:
+            # Only decrease PWM gradually
+            if target_pwm < last_pwm:
+                # Ramp down slowly
+                final_pwm = max(target_pwm, last_pwm - ramp_down_rate)
+            else:
+                final_pwm = target_pwm
+        # Temperature stable - maintain or adjust slowly
+        else:
+            # If target is higher, increase immediately
+            if target_pwm > last_pwm:
+                final_pwm = target_pwm
+            # If target is lower, decrease slowly
+            else:
+                final_pwm = max(target_pwm, last_pwm - ramp_down_rate)
+        
+        # Store current values
+        self.last_pwm[fan_id] = final_pwm
+        self.last_temp[fan_id] = temp
+        
+        return max(0, min(255, final_pwm))
+    
+    def read_temperature(self, sensor_path: str) -> Optional[float]:
+        """Read temperature from sensor path."""
+        try:
+            with open(sensor_path) as f:
+                return int(f.read().strip()) / 1000.0
+        except Exception as e:
+            logger.error(f"Failed to read temp from {sensor_path}: {e}")
+            return None
+    
+    async def control_loop(self, config: dict):
+        """Main control loop for software-based fan control."""
+        logger.info("Software controller started")
+        self.running = True
+        
+        while self.running:
+            try:
+                software_control = config.get("software_control", {})
+                
+                for fan_id_str, settings in software_control.items():
+                    if not settings.get("enabled", False):
+                        continue
+                    
+                    fan_id = int(fan_id_str)
+                    temp_source = settings.get("temp_source")
+                    curve = settings.get("curve", [])
+                    
+                    if not temp_source or not curve:
+                        continue
+                    
+                    # Read temperature
+                    temp = self.read_temperature(temp_source)
+                    if temp is None:
+                        continue
+                    
+                    # Calculate PWM with hysteresis
+                    pwm = self.calculate_pwm_from_curve(fan_id, temp, curve)
+                    
+                    # Set PWM
+                    result = run_helper("set_pwm", fan_id, pwm)
+                    if "error" in result:
+                        logger.error(f"Failed to set PWM for fan {fan_id}: {result['error']}")
+                
+                await asyncio.sleep(1)  # Update every second
+                
+            except Exception as e:
+                logger.error(f"Error in software control loop: {e}")
+                await asyncio.sleep(5)
+        
+        logger.info("Software controller stopped")
+    
+    def start(self, config: dict):
+        """Start the control loop."""
+        if not self.running:
+            self.task = asyncio.create_task(self.control_loop(config))
+    
+    def stop(self):
+        """Stop the control loop."""
+        self.running = False
+
+
+# Global software controller
+software_controller = SoftwareController()
+
+
+class AutoTuner:
+    """Automatic fan curve calibration and optimization."""
+    
+    def __init__(self):
+        self.running = False
+        self.progress = 0
+        self.current_action = ""
+        self.results = {}
+        self.original_settings = {}
+        
+    async def calibrate_fan(self, fan_id: int) -> dict:
+        """Calibrate a single fan's PWM-to-RPM curve."""
+        logger.info(f"Calibrating fan {fan_id}")
+        
+        results = {
+            "fan_id": fan_id,
+            "min_pwm": 0,
+            "pwm_rpm_map": {},
+            "max_rpm": 0
+        }
+        
+        # Save original mode
+        status = run_helper("get_status")
+        if "error" in status:
+            return {"error": "Failed to get fan status"}
+        
+        # Set to manual mode
+        run_helper("set_mode", fan_id, 1)
+        await asyncio.sleep(1)
+        
+        # Test PWM levels
+        test_pwms = [0, 50, 77, 102, 128, 153, 179, 204, 230, 255]
+        
+        for i, pwm in enumerate(test_pwms):
+            if not self.running:
+                return {"error": "Calibration cancelled"}
+            
+            self.current_action = f"Testing Fan {fan_id} at PWM {pwm} ({int((i+1)/len(test_pwms)*100)}%)"
+            self.progress = int((i / len(test_pwms)) * 100)
+            
+            # Set PWM
+            run_helper("set_pwm", fan_id, pwm)
+            await asyncio.sleep(3)  # Wait for stabilization
+            
+            # Read RPM
+            status = run_helper("get_status")
+            if "error" not in status and status.get("fans"):
+                fan_data = next((f for f in status["fans"] if f["id"] == fan_id), None)
+                if fan_data:
+                    rpm = fan_data.get("rpm", 0)
+                    results["pwm_rpm_map"][pwm] = rpm
+                    
+                    if rpm > 0 and results["min_pwm"] == 0:
+                        results["min_pwm"] = pwm
+                    
+                    if rpm > results["max_rpm"]:
+                        results["max_rpm"] = rpm
+                    
+                    logger.info(f"Fan {fan_id} PWM {pwm} → {rpm} RPM")
+        
+        return results
+    
+    async def profile_temperature(self, temp_source: str, duration: int = 30) -> dict:
+        """Profile system temperature characteristics."""
+        logger.info(f"Profiling temperature from {temp_source}")
+        
+        temps = []
+        
+        for i in range(duration):
+            if not self.running:
+                return {"error": "Profiling cancelled"}
+            
+            self.current_action = f"Monitoring temperature ({i+1}/{duration}s)"
+            self.progress = int((i / duration) * 100)
+            
+            try:
+                with open(temp_source) as f:
+                    temp = int(f.read().strip()) / 1000.0
+                    temps.append(temp)
+            except Exception as e:
+                logger.error(f"Failed to read temperature: {e}")
+            
+            await asyncio.sleep(1)
+        
+        if not temps:
+            return {"error": "No temperature data collected"}
+        
+        return {
+            "min_temp": min(temps),
+            "max_temp": max(temps),
+            "avg_temp": sum(temps) / len(temps),
+            "idle_temp": temps[0]
+        }
+    
+    def generate_curve(self, fan_data: dict, temp_data: dict, profile: str = "balanced") -> list:
+        """Generate optimal curve based on calibration and profile."""
+        
+        profiles = {
+            "silent": {
+                "temp_margin": 10,
+                "min_pwm_percent": 0.3,
+                "curve_aggression": 0.7
+            },
+            "balanced": {
+                "temp_margin": 5,
+                "min_pwm_percent": 0.4,
+                "curve_aggression": 1.0
+            },
+            "performance": {
+                "temp_margin": 0,
+                "min_pwm_percent": 0.5,
+                "curve_aggression": 1.3
+            }
+        }
+        
+        config = profiles.get(profile, profiles["balanced"])
+        
+        # Calculate temperature points
+        idle = temp_data.get("idle_temp", 35)
+        max_safe = 80  # Configurable
+        
+        temp_range = max_safe - idle
+        min_pwm = max(fan_data.get("min_pwm", 77), 50)  # Ensure minimum 50
+        
+        # Generate 5-point curve
+        curve = [
+            {
+                "point": 1,
+                "temp": round(idle, 1),
+                "pwm": max(int(min_pwm * config["min_pwm_percent"]), 50)
+            },
+            {
+                "point": 2,
+                "temp": round(idle + temp_range * 0.25, 1),
+                "pwm": min(int(255 * 0.4 * config["curve_aggression"]), 255)
+            },
+            {
+                "point": 3,
+                "temp": round(idle + temp_range * 0.5, 1),
+                "pwm": min(int(255 * 0.6 * config["curve_aggression"]), 255)
+            },
+            {
+                "point": 4,
+                "temp": round(idle + temp_range * 0.75, 1),
+                "pwm": min(int(255 * 0.8 * config["curve_aggression"]), 255)
+            },
+            {
+                "point": 5,
+                "temp": max_safe,
+                "pwm": 255
+            }
+        ]
+        
+        return curve
+    
+    async def run_auto_tune(self, fan_ids: list, temp_source: str, profile: str = "balanced"):
+        """Run complete auto-tuning process."""
+        self.running = True
+        self.results = {
+            "fan_calibration": {},
+            "temp_profile": {},
+            "generated_curves": {},
+            "profile": profile,
+            "timestamp": asyncio.get_event_loop().time()
+        }
+        
+        try:
+            # Phase 1: Temperature profiling
+            self.current_action = "Profiling system temperature..."
+            temp_profile = await self.profile_temperature(temp_source, duration=30)
+            if "error" in temp_profile:
+                self.results["error"] = temp_profile["error"]
+                return self.results
+            
+            self.results["temp_profile"] = temp_profile
+            
+            # Phase 2: Fan calibration
+            for i, fan_id in enumerate(fan_ids):
+                if not self.running:
+                    self.results["error"] = "Auto-tune cancelled"
+                    return self.results
+                
+                self.current_action = f"Calibrating Fan {fan_id}..."
+                self.progress = int((i / len(fan_ids)) * 100)
+                
+                fan_cal = await self.calibrate_fan(fan_id)
+                if "error" in fan_cal:
+                    logger.error(f"Failed to calibrate fan {fan_id}: {fan_cal['error']}")
+                    continue
+                
+                self.results["fan_calibration"][str(fan_id)] = fan_cal
+                
+                # Generate curve
+                curve = self.generate_curve(fan_cal, temp_profile, profile)
+                self.results["generated_curves"][str(fan_id)] = curve
+            
+            self.current_action = "Auto-tune complete!"
+            self.progress = 100
+            
+        except Exception as e:
+            logger.error(f"Auto-tune error: {e}")
+            self.results["error"] = str(e)
+        
+        finally:
+            self.running = False
+        
+        return self.results
+    
+    def cancel(self):
+        """Cancel auto-tuning."""
+        self.running = False
+
+
+# Global auto-tuner
+auto_tuner = AutoTuner()
+
+
 def apply_saved_settings():
     """Apply saved settings on startup."""
     config = load_config()
@@ -226,6 +589,9 @@ async def lifespan(app: FastAPI):
     config = load_config()
     apply_saved_settings()
     
+    # Start software controller
+    software_controller.start(config)
+    
     # Start background broadcaster
     broadcast_task = asyncio.create_task(status_broadcaster())
     logger.info("Fan Control API started")
@@ -233,6 +599,7 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
+    software_controller.stop()
     broadcast_task.cancel()
     try:
         await broadcast_task
@@ -287,7 +654,20 @@ class TargetRPMRequest(BaseModel):
 
 class TempSourceRequest(BaseModel):
     fan_id: int
-    temp_source: int  # 1-13
+    temp_source: int  # 1-12
+
+
+class SoftwareControlRequest(BaseModel):
+    fan_id: int
+    enabled: bool
+    temp_source: Optional[str] = None  # Path to temp sensor
+    curve: Optional[list] = None  # Curve points
+
+
+class AutoTuneRequest(BaseModel):
+    fan_ids: list  # List of fan IDs to tune
+    temp_source: str  # Temperature sensor path
+    profile: str = "balanced"  # silent, balanced, or performance
 
 
 # API Routes
@@ -552,8 +932,8 @@ async def set_temp_source(request: TempSourceRequest):
     if request.fan_id < 1 or request.fan_id > 5:
         raise HTTPException(400, "Invalid fan_id. Must be 1-5")
     
-    if request.temp_source < 1 or request.temp_source > 13:
-        raise HTTPException(400, "Invalid temp_source. Must be 1-13")
+    if request.temp_source < 1 or request.temp_source > 12:
+        raise HTTPException(400, "Invalid temp_source. Must be 1-12")
     
     # Set the temp source
     result = run_helper("set_temp_source", request.fan_id, request.temp_source)
@@ -588,7 +968,7 @@ async def get_temp_sensors():
                     break
     
     if hwmon_path:
-        for i in range(1, 14):
+        for i in range(1, 13):  # NCT6779 only supports temp sources 1-12
             label_file = os.path.join(hwmon_path, f"temp{i}_label")
             if os.path.exists(label_file):
                 try:
@@ -615,10 +995,167 @@ async def get_available_modes():
     }
 
 
+@app.post("/api/software_control")
+async def set_software_control(request: SoftwareControlRequest):
+    """Enable/disable software-based fan control."""
+    global config
+    
+    logger.info(f"Software control request: fan_id={request.fan_id}, enabled={request.enabled}")
+    
+    if request.fan_id < 1 or request.fan_id > 5:
+        raise HTTPException(400, "Invalid fan_id. Must be 1-5")
+    
+    # Initialize software_control in config if not exists
+    config.setdefault("software_control", {})
+    
+    if request.enabled:
+        # Enable software control
+        if not request.temp_source:
+            raise HTTPException(400, "temp_source required when enabling software control")
+        
+        # Use existing curve or provided curve
+        curve = request.curve if request.curve else config.get("curves", {}).get(str(request.fan_id), [])
+        
+        config["software_control"][str(request.fan_id)] = {
+            "enabled": True,
+            "temp_source": request.temp_source,
+            "curve": curve
+        }
+        
+        # Set fan to mode 1 (manual) for software control
+        result = run_helper("set_mode", request.fan_id, 1)
+        if "error" in result:
+            raise HTTPException(500, f"Failed to set fan mode: {result['error']}")
+        
+        config["fan_modes"][str(request.fan_id)] = 1
+        
+        logger.info(f"Software control enabled for fan {request.fan_id} using {request.temp_source}")
+    else:
+        # Disable software control
+        if str(request.fan_id) in config["software_control"]:
+            del config["software_control"][str(request.fan_id)]
+        
+        logger.info(f"Software control disabled for fan {request.fan_id}")
+    
+    save_config(config)
+    
+    # Restart software controller to pick up changes
+    software_controller.stop()
+    await asyncio.sleep(0.1)
+    software_controller.start(config)
+    
+    return {"success": True, "fan_id": request.fan_id, "enabled": request.enabled}
+
+
+@app.get("/api/temp_sensors_all")
+async def get_all_temp_sensors():
+    """Get all available temperature sensors from all hwmon devices."""
+    sensors = []
+    
+    # Scan all hwmon devices
+    for hwmon_path in glob.glob("/sys/class/hwmon/hwmon*"):
+        name_file = os.path.join(hwmon_path, "name")
+        if not os.path.exists(name_file):
+            continue
+        
+        try:
+            with open(name_file) as f:
+                hwmon_name = f.read().strip()
+            
+            # Find all temp sensors in this hwmon
+            for temp_file in glob.glob(os.path.join(hwmon_path, "temp*_input")):
+                temp_num = temp_file.split("temp")[1].split("_")[0]
+                label_file = os.path.join(hwmon_path, f"temp{temp_num}_label")
+                
+                label = f"temp{temp_num}"
+                if os.path.exists(label_file):
+                    try:
+                        with open(label_file) as f:
+                            label = f.read().strip()
+                    except:
+                        pass
+                
+                sensors.append({
+                    "path": temp_file,
+                    "hwmon": hwmon_name,
+                    "label": label,
+                    "display_name": f"{hwmon_name} - {label}"
+                })
+        except Exception as e:
+            logger.error(f"Error reading hwmon {hwmon_path}: {e}")
+            continue
+    
+    return {"sensors": sensors}
+
+
 @app.get("/api/config")
 async def get_config():
     """Get current config."""
     return config
+
+
+@app.post("/api/auto_tune/start")
+async def start_auto_tune(request: AutoTuneRequest):
+    """Start auto-tuning process."""
+    global auto_tuner
+    
+    if auto_tuner.running:
+        raise HTTPException(400, "Auto-tune already running")
+    
+    logger.info(f"Starting auto-tune for fans {request.fan_ids} with profile {request.profile}")
+    
+    # Start auto-tune in background
+    asyncio.create_task(auto_tuner.run_auto_tune(request.fan_ids, request.temp_source, request.profile))
+    
+    return {"success": True, "message": "Auto-tune started"}
+
+
+@app.get("/api/auto_tune/status")
+async def get_auto_tune_status():
+    """Get current auto-tuning progress."""
+    return {
+        "running": auto_tuner.running,
+        "progress": auto_tuner.progress,
+        "current_action": auto_tuner.current_action,
+        "results": auto_tuner.results if not auto_tuner.running else {}
+    }
+
+
+@app.post("/api/auto_tune/apply")
+async def apply_auto_tune():
+    """Apply generated curves from auto-tune."""
+    global config
+    
+    if auto_tuner.running:
+        raise HTTPException(400, "Auto-tune still running")
+    
+    if not auto_tuner.results or "generated_curves" not in auto_tuner.results:
+        raise HTTPException(400, "No auto-tune results available")
+    
+    # Apply curves to config
+    for fan_id_str, curve in auto_tuner.results["generated_curves"].items():
+        config.setdefault("curves", {})
+        config["curves"][fan_id_str] = curve
+    
+    # Store calibration data
+    config["auto_tune_results"] = {
+        "timestamp": auto_tuner.results.get("timestamp"),
+        "profile": auto_tuner.results.get("profile"),
+        "fan_calibration": auto_tuner.results.get("fan_calibration", {}),
+        "temp_profile": auto_tuner.results.get("temp_profile", {})
+    }
+    
+    save_config(config)
+    
+    logger.info("Auto-tune curves applied")
+    return {"success": True, "message": "Curves applied successfully"}
+
+
+@app.post("/api/auto_tune/cancel")
+async def cancel_auto_tune():
+    """Cancel running auto-tune."""
+    auto_tuner.cancel()
+    return {"success": True, "message": "Auto-tune cancelled"}
 
 
 @app.websocket("/ws")
