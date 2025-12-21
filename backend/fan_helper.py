@@ -161,11 +161,11 @@ def set_mode(pwm_num, mode):
     """Set fan mode.
     
     Modes:
-        0: Manual mode (full off)
-        1: Manual mode (PWM/DC control)
-        2: Thermal Cruise mode
-        3: Fan Speed Cruise mode
-        5: Smart Fan IV+ mode (BIOS control)
+        0: Off (fan stopped)
+        1: Manual PWM (fixed PWM percentage)
+        2: Manual Curve (temperature-based automatic control)
+        3: Target RPM (maintain target speed)
+        5: BIOS Control (motherboard firmware control)
     
     Note: Mode 4 (Smart Fan IV) is not available on this chipset.
     """
@@ -225,6 +225,55 @@ def set_pwm(pwm_num, value):
     if write_file(path, value):
         return {"success": True, "pwm": pwm_num, "value": value}
     return {"error": f"Failed to set PWM for pwm{pwm_num}"}
+
+def set_target_rpm(fan_num, rpm):
+    """Set target RPM for fan (mode 3 - Fan Speed Cruise)."""
+    hwmon = find_hwmon()
+    if not hwmon:
+        return {"error": "nct6779 not found"}
+    
+    rpm = max(0, int(rpm))
+    path = os.path.join(hwmon, f"fan{fan_num}_target")
+    
+    print(f"[FAN-CONTROL] Setting fan {fan_num} target RPM to {rpm}", file=sys.stderr, flush=True)
+    
+    if not os.path.exists(path):
+        print(f"[FAN-CONTROL] Target RPM file does not exist: {path}", file=sys.stderr, flush=True)
+        return {"error": f"Target RPM file not found: {path}"}
+    
+    if write_file(path, rpm):
+        print(f"[FAN-CONTROL] ✓ Fan {fan_num} target RPM set to {rpm}", file=sys.stderr, flush=True)
+        return {"success": True, "fan": fan_num, "target_rpm": rpm}
+    
+    print(f"[FAN-CONTROL] ✗ Failed to set target RPM for fan {fan_num}", file=sys.stderr, flush=True)
+    return {"error": f"Failed to set target RPM for fan{fan_num}"}
+
+
+def set_temp_source(pwm_num, temp_source):
+    """Set temperature source for a fan (1-13)."""
+    hwmon = find_hwmon()
+    if not hwmon:
+        return {"error": "nct6779 not found"}
+    
+    temp_source = int(temp_source)
+    if temp_source < 1 or temp_source > 13:
+        return {"error": f"Invalid temp source: {temp_source}. Must be 1-13"}
+    
+    path = os.path.join(hwmon, f"pwm{pwm_num}_temp_sel")
+    
+    print(f"[FAN-CONTROL] Setting fan {pwm_num} temp source to {temp_source}", file=sys.stderr, flush=True)
+    
+    if not os.path.exists(path):
+        print(f"[FAN-CONTROL] Temp source file does not exist: {path}", file=sys.stderr, flush=True)
+        return {"error": f"Temp source file not found: {path}"}
+    
+    if write_file(path, temp_source):
+        print(f"[FAN-CONTROL] ✓ Fan {pwm_num} temp source set to {temp_source}", file=sys.stderr, flush=True)
+        return {"success": True, "pwm": pwm_num, "temp_source": temp_source}
+    
+    print(f"[FAN-CONTROL] ✗ Failed to set temp source for fan {pwm_num}", file=sys.stderr, flush=True)
+    return {"error": f"Failed to set temp source for pwm{pwm_num}"}
+
 
 def set_curve_point(pwm_num, point, temp, pwm_val):
     """Set a curve point for a fan."""
@@ -306,6 +355,20 @@ def main():
                 print(f"[FAN-CONTROL] ✓ Fan {sys.argv[2]} PWM set to {sys.argv[3]}", file=sys.stderr, flush=True)
             else:
                 print(f"[FAN-CONTROL] ✗ Failed to set fan {sys.argv[2]} PWM: {result.get('error')}", file=sys.stderr, flush=True)
+        elif cmd == "set_target_rpm" and len(sys.argv) >= 4:
+            print(f"[FAN-CONTROL] Setting fan {sys.argv[2]} target RPM to {sys.argv[3]}", file=sys.stderr, flush=True)
+            result = set_target_rpm(int(sys.argv[2]), int(sys.argv[3]))
+            if "success" in result:
+                print(f"[FAN-CONTROL] ✓ Fan {sys.argv[2]} target RPM set to {sys.argv[3]}", file=sys.stderr, flush=True)
+            else:
+                print(f"[FAN-CONTROL] ✗ Failed to set fan {sys.argv[2]} target RPM: {result.get('error')}", file=sys.stderr, flush=True)
+        elif cmd == "set_temp_source" and len(sys.argv) >= 4:
+            print(f"[FAN-CONTROL] Setting fan {sys.argv[2]} temp source to {sys.argv[3]}", file=sys.stderr, flush=True)
+            result = set_temp_source(int(sys.argv[2]), int(sys.argv[3]))
+            if "success" in result:
+                print(f"[FAN-CONTROL] ✓ Fan {sys.argv[2]} temp source set to {sys.argv[3]}", file=sys.stderr, flush=True)
+            else:
+                print(f"[FAN-CONTROL] ✗ Failed to set fan {sys.argv[2]} temp source: {result.get('error')}", file=sys.stderr, flush=True)
         elif cmd == "set_curve" and len(sys.argv) >= 6:
             print(f"[FAN-CONTROL] Setting fan {sys.argv[2]} curve point {sys.argv[3]}: {sys.argv[4]}°C → PWM {sys.argv[5]}", file=sys.stderr, flush=True)
             result = set_curve_point(

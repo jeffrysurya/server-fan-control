@@ -23,9 +23,17 @@ const ThermometerIcon = ({ className }) => (
 )
 
 // Fan Card Component
-function FanCard({ fan, fanName, fanMode, onNameChange, onModeChange, onPWMModeChange, currentTemp }) {
+function FanCard({ fan, fanName, fanMode, onNameChange, onModeChange, onPWMChange, onRPMChange, onTempSourceChange, onPWMModeChange, onEditCurve, currentTemp, tempSensors, currentTempSource }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(fanName)
+  const [localPWM, setLocalPWM] = useState(fan.pwm_percent)
+  const [pwmTimeout, setPwmTimeout] = useState(null)
+  const [targetRPM, setTargetRPM] = useState(1000)
+
+  // Update local PWM when fan data changes
+  useEffect(() => {
+    setLocalPWM(fan.pwm_percent)
+  }, [fan.pwm_percent])
 
   const handleSave = () => {
     onNameChange(fan.id, name)
@@ -74,9 +82,9 @@ function FanCard({ fan, fanName, fanMode, onNameChange, onModeChange, onPWMModeC
             title="Fan control mode"
           >
             <option value={0}>Off</option>
-            <option value={1}>Manual</option>
-            <option value={2}>Thermal Cruise</option>
-            <option value={3}>Speed Cruise</option>
+            <option value={1}>Manual PWM</option>
+            <option value={2}>Manual Curve</option>
+            <option value={3}>Target RPM</option>
             <option value={5}>BIOS Control</option>
           </select>
           <button
@@ -101,6 +109,60 @@ function FanCard({ fan, fanName, fanMode, onNameChange, onModeChange, onPWMModeC
         </div>
       </div>
 
+      {/* Manual PWM slider for mode 1 */}
+      {fanMode === 1 && (
+        <div className="mt-3 px-2">
+          <div className="flex justify-between items-center mb-1">
+            <label className="text-xs text-gray-400">Manual PWM</label>
+            <span className="text-xs font-bold text-blue-300">{Math.round(localPWM)}%</span>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            value={localPWM}
+            onChange={(e) => {
+              const newValue = parseInt(e.target.value)
+              setLocalPWM(newValue)
+
+              // Debounce the API call
+              if (pwmTimeout) clearTimeout(pwmTimeout)
+              const timeout = setTimeout(() => {
+                onPWMChange(fan.id, Math.round(newValue * 255 / 100))
+              }, 300) // 300ms debounce
+              setPwmTimeout(timeout)
+            }}
+            className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer slider"
+          />
+        </div>
+      )}
+
+      {/* RPM target input for mode 3 */}
+      {fanMode === 3 && (
+        <div className="mt-3 px-2">
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-400">Target RPM:</label>
+            <input
+              type="number"
+              min="0"
+              max="5000"
+              step="100"
+              value={targetRPM}
+              onChange={(e) => setTargetRPM(parseInt(e.target.value) || 0)}
+              className="bg-gray-700 rounded px-2 py-1 text-sm w-24"
+              placeholder="RPM"
+            />
+            <button
+              onClick={() => onRPMChange(fan.id, targetRPM)}
+              className="text-xs px-2 py-1 bg-blue-600 hover:bg-blue-500 rounded"
+            >
+              Set
+            </button>
+          </div>
+          <div className="text-xs text-gray-500 mt-1">Current: {fan.rpm} RPM</div>
+        </div>
+      )}
+
       {/* Mini curve preview */}
       <div className="mt-3 h-16 bg-gray-900 rounded overflow-hidden">
         <ResponsiveContainer width="100%" height="100%">
@@ -124,6 +186,38 @@ function FanCard({ fan, fanName, fanMode, onNameChange, onModeChange, onPWMModeC
           </LineChart>
         </ResponsiveContainer>
       </div>
+
+      {/* Edit curve button - only for mode 2 */}
+      {fanMode === 2 && (
+        <button
+          onClick={() => onEditCurve(fan.id)}
+          className="mt-2 w-full py-2 px-3 bg-blue-600 hover:bg-blue-500 rounded text-sm font-medium transition-colors flex items-center justify-center gap-2"
+        >
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+          </svg>
+          Edit Temperature Curve
+        </button>
+      )}
+
+      {/* Temperature source selector - only for mode 2 */}
+      {fanMode === 2 && tempSensors && tempSensors.length > 0 && (
+        <div className="mt-2 px-2">
+          <label className="text-xs text-gray-400 block mb-1">Temperature Source:</label>
+          <select
+            value={currentTempSource || 1}
+            onChange={(e) => onTempSourceChange(fan.id, parseInt(e.target.value))}
+            className="w-full text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 cursor-pointer"
+          >
+            {tempSensors.map(sensor => (
+              <option key={sensor.id} value={sensor.id}>
+                {sensor.id}: {sensor.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
     </div>
   )
 }
@@ -433,6 +527,7 @@ export default function App() {
   const [status, setStatus] = useState(null)
   const [config, setConfig] = useState(null)
   const [fanModes, setFanModes] = useState({}) // Per-fan modes
+  const [tempSensors, setTempSensors] = useState([])
   const [editingFan, setEditingFan] = useState(null)
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState(null)
@@ -487,6 +582,12 @@ export default function App() {
       .then(r => r.json())
       .then(setConfig)
       .catch(e => setError('Failed to load config'))
+
+    // Fetch temperature sensors
+    fetch('/api/temp_sensors')
+      .then(res => res.json())
+      .then(data => setTempSensors(data.sensors || []))
+      .catch(e => console.error('Failed to fetch temp sensors:', e))
   }, [])
 
   const handleFanModeChange = async (fanId, newMode) => {
@@ -557,6 +658,59 @@ export default function App() {
     }
   }
 
+  const handlePWMChange = async (fanId, pwmValue) => {
+    try {
+      const res = await fetch('/api/manual_pwm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fan_id: fanId, pwm: pwmValue })
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || 'Failed to set PWM')
+      }
+      // WebSocket will update the display
+    } catch (e) {
+      setError(e.message)
+      console.error('Failed to set PWM:', e)
+    }
+  }
+
+  const handleRPMChange = async (fanId, targetRPM) => {
+    try {
+      const res = await fetch('/api/target_rpm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fan_id: fanId, target_rpm: targetRPM })
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || 'Failed to set target RPM')
+      }
+      // WebSocket will update the display
+    } catch (e) {
+      setError(e.message)
+      console.error('Failed to set target RPM:', e)
+    }
+  }
+
+  const handleTempSourceChange = async (fanId, tempSource) => {
+    try {
+      const res = await fetch('/api/temp_source', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fan_id: fanId, temp_source: tempSource })
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || 'Failed to set temp source')
+      }
+    } catch (e) {
+      setError(e.message)
+      console.error('Failed to set temp source:', e)
+    }
+  }
+
   const fanNames = config?.fan_names || {}
   const curves = config?.curves || {}
   const cpuTemp = status?.temps?.['CPU (Tctl)'] || status?.temps?.CPUTIN
@@ -602,26 +756,22 @@ export default function App() {
         {/* Fan Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
           {status?.fans?.map((fan) => (
-            <div key={fan.id} className="relative">
+            <div key={fan.id}>
               <FanCard
                 fan={fan}
                 fanName={fanNames[fan.id] || `Fan ${fan.id}`}
                 fanMode={fanModes[fan.id] || fan.mode || 5}
                 onNameChange={handleNameChange}
                 onModeChange={handleFanModeChange}
+                onPWMChange={handlePWMChange}
+                onRPMChange={handleRPMChange}
+                onTempSourceChange={handleTempSourceChange}
                 onPWMModeChange={handlePWMModeChange}
+                onEditCurve={setEditingFan}
                 currentTemp={cpuTemp}
+                tempSensors={tempSensors}
+                currentTempSource={config?.temp_sources?.[fan.id]}
               />
-              <button
-                onClick={() => setEditingFan(fan.id)}
-                className="absolute top-2 right-2 p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
-                title="Edit curve"
-              >
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                </svg>
-              </button>
             </div>
           ))}
         </div>
@@ -630,10 +780,10 @@ export default function App() {
         <div className="mt-6 text-sm text-gray-500">
           <p><strong>Fan Modes:</strong> Each fan can be controlled independently:</p>
           <ul className="list-disc ml-6 mt-2 space-y-1">
-            <li><strong>Off:</strong> Fan completely off (use with caution)</li>
-            <li><strong>Manual:</strong> Custom temperature-based curve control</li>
-            <li><strong>Thermal Cruise:</strong> Maintain target temperature</li>
-            <li><strong>Speed Cruise:</strong> Maintain target RPM</li>
+            <li><strong>Off:</strong> Fan stopped (use with caution - ensure adequate cooling)</li>
+            <li><strong>Manual PWM:</strong> Set a fixed PWM percentage using the slider</li>
+            <li><strong>Manual Curve:</strong> Temperature-based automatic control using your custom curve</li>
+            <li><strong>Target RPM:</strong> Maintain a specific fan speed (RPM)</li>
             <li><strong>BIOS Control:</strong> Let motherboard firmware control the fan</li>
           </ul>
           <p className="mt-2"><strong>PWM Mode:</strong> Toggle between DC (voltage-based) and PWM (pulse width modulation) control.</p>

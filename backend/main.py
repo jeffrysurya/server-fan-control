@@ -64,9 +64,9 @@ DEFAULT_CONFIG = {
 # Mode descriptions for API
 MODE_DESCRIPTIONS = {
     0: "Off",
-    1: "Manual",
-    2: "Thermal Cruise",
-    3: "Fan Speed Cruise",
+    1: "Manual PWM",
+    2: "Manual Curve",
+    3: "Target RPM",
     5: "BIOS Control"
 }
 
@@ -156,8 +156,8 @@ def apply_saved_settings():
         
         logger.info(f"Fan {fan_id} set to mode {mode} ({MODE_DESCRIPTIONS.get(mode, 'Unknown')})") 
         
-        # Apply curve points for modes that support curves (1, 2)
-        if mode in [1, 2]:
+        # Apply curve points only for mode 2 (Manual Curve)
+        if mode == 2:
             curves = config.get("curves", {}).get(str(fan_id), [])
             for point in curves:
                 run_helper(
@@ -279,6 +279,16 @@ class FanModeRequest(BaseModel):
     mode: int  # 0-5
 
 
+class TargetRPMRequest(BaseModel):
+    fan_id: int
+    target_rpm: int
+
+
+class TempSourceRequest(BaseModel):
+    fan_id: int
+    temp_source: int  # 1-13
+
+
 # API Routes
 @app.get("/api/status")
 async def get_status():
@@ -356,9 +366,12 @@ async def set_curve(request: CurveRequest):
     ]
     save_config(config)
     
-    # Apply if in manual mode
+    # Apply curve to hardware if fan is in mode 2 (Manual Curve)
+    fan_mode = config.get("fan_modes", {}).get(str(request.fan_id), 5)
     results = []
-    if config.get("mode") == "manual":
+    
+    if fan_mode == 2:
+        logger.info(f"Applying curve for fan {request.fan_id} (mode 2)")
         for point in request.curve:
             result = run_helper(
                 "set_curve",
@@ -368,8 +381,12 @@ async def set_curve(request: CurveRequest):
                 point.pwm
             )
             results.append(result)
+            if "error" in result:
+                logger.error(f"Failed to set curve point {point.point}: {result['error']}")
+    else:
+        logger.info(f"Fan {request.fan_id} is in mode {fan_mode}, not applying curve to hardware")
     
-    return {"success": True, "fan_id": request.fan_id, "applied": config.get("mode") == "manual", "results": results}
+    return {"success": True, "fan_id": request.fan_id, "results": results}
 
 
 @app.post("/api/fan_name")
@@ -417,6 +434,36 @@ async def set_pwm_mode(request: PWMModeRequest):
     return {"success": True, "fan_id": request.fan_id, "pwm_mode": request.pwm_mode}
 
 
+@app.post("/api/manual_pwm")
+async def set_manual_pwm(request: ManualPWMRequest):
+    """Set manual PWM value for a fan (mode 1)."""
+    global config
+    
+    logger.info(f"Manual PWM request: fan_id={request.fan_id}, pwm={request.pwm}")
+    
+    if request.fan_id < 1 or request.fan_id > 5:
+        raise HTTPException(400, "Invalid fan_id. Must be 1-5")
+    
+    if request.pwm < 0 or request.pwm > 255:
+        raise HTTPException(400, "Invalid PWM value. Must be 0-255")
+    
+    # Set the PWM value
+    result = run_helper("set_pwm", request.fan_id, request.pwm)
+    logger.info(f"Helper result: {result}")
+    
+    if "error" in result:
+        logger.error(f"Failed to set manual PWM: {result['error']}")
+        raise HTTPException(500, result["error"])
+    
+    # Save to config
+    config.setdefault("manual_pwm", {})
+    config["manual_pwm"][str(request.fan_id)] = request.pwm
+    save_config(config)
+    
+    logger.info(f"Manual PWM set for fan {request.fan_id}: {request.pwm}")
+    return {"success": True, "fan_id": request.fan_id, "pwm": request.pwm}
+
+
 @app.post("/api/fan_mode")
 async def set_fan_mode(request: FanModeRequest):
     """Set mode for a specific fan (0-5)."""
@@ -443,8 +490,8 @@ async def set_fan_mode(request: FanModeRequest):
     config["fan_modes"][str(request.fan_id)] = request.mode
     save_config(config)
     
-    # Apply curves if mode supports them (1, 2)
-    if request.mode in [1, 2]:
+    # Apply curves only for mode 2 (Manual Curve)
+    if request.mode == 2:
         curves = config.get("curves", {}).get(str(request.fan_id), [])
         for point in curves:
             run_helper(
@@ -464,15 +511,104 @@ async def set_fan_mode(request: FanModeRequest):
     }
 
 
+@app.post("/api/target_rpm")
+async def set_target_rpm(request: TargetRPMRequest):
+    """Set target RPM for a fan (mode 3)."""
+    global config
+    
+    logger.info(f"Target RPM request: fan_id={request.fan_id}, target_rpm={request.target_rpm}")
+    
+    if request.fan_id < 1 or request.fan_id > 5:
+        raise HTTPException(400, "Invalid fan_id. Must be 1-5")
+    
+    if request.target_rpm < 0 or request.target_rpm > 10000:
+        raise HTTPException(400, "Invalid target RPM. Must be 0-10000")
+    
+    # Set the target RPM
+    result = run_helper("set_target_rpm", request.fan_id, request.target_rpm)
+    logger.info(f"Helper result: {result}")
+    
+    if "error" in result:
+        logger.error(f"Failed to set target RPM: {result['error']}")
+        raise HTTPException(500, result["error"])
+    
+    # Save to config
+    config.setdefault("target_rpm", {})
+    config["target_rpm"][str(request.fan_id)] = request.target_rpm
+    save_config(config)
+    
+    logger.info(f"Target RPM set for fan {request.fan_id}: {request.target_rpm}")
+    return {"success": True, "fan_id": request.fan_id, "target_rpm": request.target_rpm}
+
+
+@app.post("/api/temp_source")
+async def set_temp_source(request: TempSourceRequest):
+    """Set temperature source for a fan."""
+    global config
+    
+    logger.info(f"Temp source request: fan_id={request.fan_id}, temp_source={request.temp_source}")
+    
+    if request.fan_id < 1 or request.fan_id > 5:
+        raise HTTPException(400, "Invalid fan_id. Must be 1-5")
+    
+    if request.temp_source < 1 or request.temp_source > 13:
+        raise HTTPException(400, "Invalid temp_source. Must be 1-13")
+    
+    # Set the temp source
+    result = run_helper("set_temp_source", request.fan_id, request.temp_source)
+    logger.info(f"Helper result: {result}")
+    
+    if "error" in result:
+        logger.error(f"Failed to set temp source: {result['error']}")
+        raise HTTPException(500, result["error"])
+    
+    # Save to config
+    config.setdefault("temp_sources", {})
+    config["temp_sources"][str(request.fan_id)] = request.temp_source
+    save_config(config)
+    
+    logger.info(f"Temp source set for fan {request.fan_id}: {request.temp_source}")
+    return {"success": True, "fan_id": request.fan_id, "temp_source": request.temp_source}
+
+
+@app.get("/api/temp_sensors")
+async def get_temp_sensors():
+    """Get list of available temperature sensors."""
+    sensors = []
+    
+    # Get NCT6779 temp sensors
+    hwmon_path = None
+    for hwmon in glob.glob("/sys/class/hwmon/hwmon*"):
+        name_file = os.path.join(hwmon, "name")
+        if os.path.exists(name_file):
+            with open(name_file) as f:
+                if "nct6779" in f.read():
+                    hwmon_path = hwmon
+                    break
+    
+    if hwmon_path:
+        for i in range(1, 14):
+            label_file = os.path.join(hwmon_path, f"temp{i}_label")
+            if os.path.exists(label_file):
+                try:
+                    with open(label_file) as f:
+                        label = f.read().strip()
+                        sensors.append({"id": i, "label": label})
+                except:
+                    pass
+    
+    return {"sensors": sensors}
+
+
 @app.get("/api/available_modes")
 async def get_available_modes():
     """Get list of available fan control modes."""
     return {
         "modes": [
-            {"value": 0, "name": "Off", "description": "Fan completely off"},
-            {"value": 1, "name": "Manual", "description": "Manual PWM/DC control with custom curve"},
-            {"value": 2, "name": "Thermal Cruise", "description": "Maintain target temperature"},
-            {"value": 3, "name": "Fan Speed Cruise", "description": "Maintain target RPM"},
+            {"value": 0, "name": "Off", "description": "Fan stopped (use with caution)"},
+            {"value": 1, "name": "Manual PWM", "description": "Set fixed PWM percentage"},
+            {"value": 2, "name": "Manual Curve", "description": "Temperature-based automatic control"},
+            {"value": 3, "name": "Target RPM", "description": "Maintain target fan speed"},
             {"value": 5, "name": "BIOS Control", "description": "Let motherboard BIOS control fan"}
         ]
     }
